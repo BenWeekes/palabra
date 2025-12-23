@@ -1,0 +1,47 @@
+version: "3.7"
+services:
+    server:
+        container_name: server
+        build: .
+        depends_on:
+            database:
+                condition: service_healthy
+        environment:
+            - APP_ID=$APP_ID
+            - APP_CERTIFICATE=$APP_CERTIFICATE
+            - CUSTOMER_ID=$CUSTOMER_ID
+            - CUSTOMER_CERTIFICATE=$CUSTOMER_CERTIFICATE
+            - PALABRA_CLIENT_ID=$PALABRA_CLIENT_ID
+            - PALABRA_CLIENT_SECRET=$PALABRA_CLIENT_SECRET
+            - BUCKET_NAME=$BUCKET_NAME
+            - BUCKET_ACCESS_KEY=$BUCKET_ACCESS_KEY
+            - BUCKET_ACCESS_SECRET=$BUCKET_ACCESS_SECRET
+            - CLIENT_ID=$CLIENT_ID
+            - CLIENT_SECRET=$CLIENT_SECRET
+            - PSTN_USERNAME=$PSTN_USERNAME
+            - PSTN_PASSWORD=$PSTN_PASSWORD
+            - SCHEME=$SCHEME
+            - ALLOWED_ORIGIN=$ALLOWED_ORIGIN
+            - ENABLE_NEWRELIC_MONITORING=false
+            - RUN_MIGRATION=true
+            - DATABASE_URL=postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@database:5432/$POSTGRES_DB?sslmode=disable
+            - PORT=8080
+        ports:
+            - "8081:8080"
+
+    database:
+        container_name: server_database
+        image: postgres:12.4
+        restart: always
+        hostname: database
+        environment:
+            - POSTGRES_USER=$POSTGRES_USER
+            - POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+            - POSTGRES_DB=$POSTGRES_DB
+        ports:
+            - "5432:5432"
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            interval: 5s
+            timeout: 5s
+            retries: 5
