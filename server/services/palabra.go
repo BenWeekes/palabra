@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/samyak-jain/agora_backend/utils/rtctoken"
@@ -18,6 +17,7 @@ import (
 type PalabraStartRequest struct {
 	Channel          string   `json:"channel"`
 	SourceUID        string   `json:"sourceUid"`
+	SourceName       string   `json:"sourceName"`       // NEW: User's display name
 	SourceLanguage   string   `json:"sourceLanguage"`
 	TargetLanguages  []string `json:"targetLanguages"`
 }
@@ -83,25 +83,38 @@ const (
 	palabraAPIURL = "https://api.palabra.ai/agora/translations"
 	taskUIDBase   = 200
 	transUIDBase  = 3000
+	anamUIDBase   = 4000 // NEW: Base UID for Anam avatar streams
 )
 
-// ActiveTask represents a translation task in the registry
-type ActiveTask struct {
-	TaskID         string    `json:"taskId"`
-	Channel        string    `json:"channel"`
-	SourceUID      string    `json:"sourceUid"`
-	SourceLanguage string    `json:"sourceLanguage"`
-	TargetLanguage string    `json:"targetLanguage"`
-	TranslationUID string    `json:"translationUid"`
-	CreatedAt      time.Time `json:"createdAt"`
+// TaskInfo represents an active translation task
+type TaskInfo struct {
+	TaskID      string
+	Streams     []PalabraStreamInfo
+	SourceUID   string
+	Channel     string
+	Language    string
 }
 
-// Global registry for active translation tasks
-// Key format: "channel:sourceUid:targetLang"
-var activeTasks sync.Map
+var (
+	// Map to track active Anam clients by task ID
+	activeAnamClients = make(map[string]*AnamClient)
+	// Map to track active Agora bots by task ID
+	activeAgoraBots = make(map[string]*AgoraBot)
+	// Per-channel counters for Anam UIDs (channel -> next available UID)
+	channelAnamCounters = make(map[string]uint32)
+	// Task deduplication: map key is "channel:sourceUid:targetLanguage"
+	activeTasksByKey = make(map[string]*TaskInfo)
+)
 
-// Global UID counter for translation streams (atomic operations)
-var uidCounter uint32 = transUIDBase
+// getNextAnamUID returns the next available Anam UID for a channel
+func getNextAnamUID(channel string) uint32 {
+	if _, exists := channelAnamCounters[channel]; !exists {
+		channelAnamCounters[channel] = anamUIDBase // Start at 4000 for new channels
+	}
+	uid := channelAnamCounters[channel]
+	channelAnamCounters[channel]++
+	return uid
+}
 
 // PalabraStart handles starting a translation task
 func (s *ServiceRouter) PalabraStart(w http.ResponseWriter, r *http.Request) {
@@ -115,6 +128,14 @@ func (s *ServiceRouter) PalabraStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Log incoming request
+	s.Logger.Info().
+		Str("channel", req.Channel).
+		Str("sourceUid", req.SourceUID).
+		Str("sourceLanguage", req.SourceLanguage).
+		Strs("targetLanguages", req.TargetLanguages).
+		Msg("[PALABRA-START] Received translation request")
+
 	// Validate required fields
 	if req.Channel == "" || req.SourceUID == "" || req.SourceLanguage == "" || len(req.TargetLanguages) == 0 {
 		s.Logger.Error().Msg("Missing required fields")
@@ -122,33 +143,27 @@ func (s *ServiceRouter) PalabraStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if task already exists in registry
-	targetLang := req.TargetLanguages[0] // We only support single target language per request
-	registryKey := fmt.Sprintf("%s:%s:%s", req.Channel, req.SourceUID, targetLang)
+	// OPTIMIZATION: Check if task already exists for this (channel, sourceUid, targetLanguage)
+	// Prevent duplicate Palabra tasks for the same translation
+	for _, targetLang := range req.TargetLanguages {
+		taskKey := fmt.Sprintf("%s:%s:%s", req.Channel, req.SourceUID, targetLang)
+		if existingTask, exists := activeTasksByKey[taskKey]; exists {
+			s.Logger.Info().
+				Str("taskKey", taskKey).
+				Str("existingTaskID", existingTask.TaskID).
+				Msg("[PALABRA-START] Task already exists, returning existing streams")
 
-	if existing, ok := activeTasks.Load(registryKey); ok {
-		task := existing.(ActiveTask)
-		s.Logger.Info().
-			Str("registryKey", registryKey).
-			Str("taskId", task.TaskID).
-			Str("translationUid", task.TranslationUID).
-			Msg("Reusing existing translation task")
-
-		// Return existing task (no Palabra API call)
-		respondWithJSON(w, http.StatusOK, PalabraStartResponse{
-			Success: true,
-			TaskID:  task.TaskID,
-			Streams: []PalabraStreamInfo{
-				{
-					UID:      task.TranslationUID,
-					Language: task.TargetLanguage,
+			// Return existing task info
+			respondWithJSON(w, http.StatusOK, map[string]interface{}{
+				"ok": true,
+				"data": map[string]interface{}{
+					"taskId":  existingTask.TaskID,
+					"streams": existingTask.Streams,
 				},
-			},
-		})
-		return
+			})
+			return
+		}
 	}
-
-	s.Logger.Info().Str("registryKey", registryKey).Msg("No existing task found, creating new translation task")
 
 	// Get credentials
 	appID := viper.GetString("APP_ID")
@@ -314,23 +329,129 @@ func (s *ServiceRouter) PalabraStart(w http.ResponseWriter, r *http.Request) {
 
 	s.Logger.Info().Str("taskId", taskID).Msg("Translation task started successfully")
 
-	// Store in registry
-	activeTask := ActiveTask{
-		TaskID:         taskID,
-		Channel:        req.Channel,
-		SourceUID:      req.SourceUID,
-		SourceLanguage: req.SourceLanguage,
-		TargetLanguage: targetLang,
-		TranslationUID: streams[0].UID,
-		CreatedAt:      time.Now(),
-	}
-	activeTasks.Store(registryKey, activeTask)
+	// NEW: Check if Anam is enabled
+	enableAnam := viper.GetBool("ENABLE_ANAM")
 
-	s.Logger.Info().
-		Str("registryKey", registryKey).
-		Str("taskId", taskID).
-		Str("translationUid", streams[0].UID).
-		Msg("Stored translation task in registry")
+	if enableAnam {
+		s.Logger.Info().Msg("Anam is enabled, starting avatar bot")
+
+		// Get Anam configuration
+		avatarID := viper.GetString("ANAM_AVATAR_ID")
+
+		if avatarID == "" {
+			s.Logger.Warn().Msg("ANAM_AVATAR_ID not configured, skipping Anam")
+		} else {
+			// Create Agora bot for each translation stream
+			for i, stream := range streams {
+				// Save original Palabra UID
+				palabraUID := stream.UID
+
+				// Generate Anam UID (for avatar video/audio published by Anam)
+				// Uses per-channel counter so each channel starts at 4000
+				anamUIDNum := getNextAnamUID(req.Channel)
+				anamUID := fmt.Sprintf("%d", anamUIDNum)
+
+				// Generate Bot UID (for our audio forwarder - should NOT be visible to users)
+				// Bot UID = 5000+ to avoid collision with Anam UID (4000+)
+				botUIDNum := uint32(5000 + i)
+				botUID := fmt.Sprintf("%d", botUIDNum)
+
+				s.Logger.Info().
+					Str("channel", req.Channel).
+					Str("palabraUID", palabraUID).
+					Str("anamUID", anamUID).
+					Str("botUID", botUID).
+					Msg("UID assignment for Anam avatar")
+
+				// Update stream UID immediately - client should subscribe to Anam UID, not Palabra
+				streams[i].UID = anamUID
+
+				// Generate token for Anam UID (Anam joins as this UID via init message)
+				anamToken, err := rtctoken.BuildTokenWithUID(
+					appID,
+					appCertificate,
+					req.Channel,
+					anamUIDNum,
+					rtctoken.RolePublisher,
+					expireTime,
+				)
+				if err != nil {
+					s.Logger.Error().Err(err).Str("anamUID", anamUID).Msg("Failed to generate Anam token")
+					continue
+				}
+
+				// Generate token for Bot UID (our audio forwarder bot)
+				botToken, err := rtctoken.BuildTokenWithUID(
+					appID,
+					appCertificate,
+					req.Channel,
+					botUIDNum,
+					rtctoken.RoleSubscriber, // Bot only subscribes, doesn't publish to channel
+					expireTime,
+				)
+				if err != nil {
+					s.Logger.Error().Err(err).Str("botUID", botUID).Msg("Failed to generate bot token")
+					continue
+				}
+
+				// Create Anam client with Agora parameters
+				anamClient := NewAnamClient(avatarID, appID, req.Channel, anamUID, anamToken)
+
+				// Connect to Anam WebSocket
+				err = anamClient.StartSession()
+				if err != nil {
+					s.Logger.Error().Err(err).Msg("Failed to start Anam session")
+					continue
+				}
+
+				// Store Anam client for cleanup
+				activeAnamClients[taskID] = anamClient
+
+				// Create Agora bot that subscribes to Palabra and forwards to Anam
+				// Bot uses its OWN UID (5000+), NOT the Anam UID (4000+)
+				s.Logger.Info().
+					Str("palabraUID", palabraUID).
+					Str("anamUID", anamUID).
+					Str("botUID", botUID).
+					Msg("DEBUG: About to create Agora bot")
+
+				bot := NewAgoraBot(appID, req.Channel, botUID, botToken, palabraUID, anamClient)
+
+				// Start bot (joins channel, subscribes to Palabra UID, forwards PCM to Anam)
+				err = bot.Start()
+				if err != nil {
+					s.Logger.Error().Err(err).Str("anamUID", anamUID).Msg("Failed to start Agora bot")
+					continue
+				}
+
+				// Store bot for cleanup
+				botKey := fmt.Sprintf("%s-%d", taskID, i)
+				activeAgoraBots[botKey] = bot
+
+				s.Logger.Info().
+					Str("palabraUID", palabraUID).
+					Str("anamUID", anamUID).
+					Str("botUID", botUID).
+					Msg("Agora bot started - bot subscribes to Palabra, forwards to Anam, avatar publishes as anamUID")
+			}
+		}
+	}
+
+	// Store task info for deduplication
+	for _, targetLang := range req.TargetLanguages {
+		taskKey := fmt.Sprintf("%s:%s:%s", req.Channel, req.SourceUID, targetLang)
+		activeTasksByKey[taskKey] = &TaskInfo{
+			TaskID:    taskID,
+			Streams:   streams,
+			SourceUID: req.SourceUID,
+			Channel:   req.Channel,
+			Language:  targetLang,
+		}
+		s.Logger.Info().
+			Str("taskKey", taskKey).
+			Str("taskID", taskID).
+			Msg("[PALABRA-START] Stored task for deduplication")
+	}
 
 	// Send success response
 	respondWithJSON(w, http.StatusOK, PalabraStartResponse{
@@ -421,61 +542,49 @@ func (s *ServiceRouter) PalabraStop(w http.ResponseWriter, r *http.Request) {
 
 	s.Logger.Info().Str("taskId", req.TaskID).Msg("Translation task stopped successfully")
 
-	// Remove task from registry
-	var removedKey string
-	activeTasks.Range(func(key, value interface{}) bool {
-		task := value.(ActiveTask)
-		if task.TaskID == req.TaskID {
-			removedKey = key.(string)
-			return false // Stop iteration
-		}
-		return true // Continue iteration
-	})
+	// Clean up Agora bots if they exist
+	for botKey := range activeAgoraBots {
+		if len(botKey) >= len(req.TaskID) && botKey[:len(req.TaskID)] == req.TaskID {
+			bot := activeAgoraBots[botKey]
+			s.Logger.Info().Str("taskId", req.TaskID).Str("botKey", botKey).Msg("Stopping Agora bot")
 
-	if removedKey != "" {
-		activeTasks.Delete(removedKey)
-		s.Logger.Info().
-			Str("registryKey", removedKey).
-			Str("taskId", req.TaskID).
-			Msg("Removed translation task from registry")
-	} else {
-		s.Logger.Warn().Str("taskId", req.TaskID).Msg("Task not found in registry (may have been already removed)")
+			// Stop bot (disconnects from channel, stops forwarding audio)
+			err := bot.Stop()
+			if err != nil {
+				s.Logger.Error().Err(err).Msg("Failed to stop Agora bot")
+			}
+
+			delete(activeAgoraBots, botKey)
+		}
+	}
+
+	// Clean up Anam client if it exists
+	if anamClient, exists := activeAnamClients[req.TaskID]; exists {
+		s.Logger.Info().Str("taskId", req.TaskID).Msg("Stopping Anam client")
+
+		// Close Anam client (stops WebSocket connection)
+		err := anamClient.Close()
+		if err != nil {
+			s.Logger.Error().Err(err).Msg("Failed to close Anam client")
+		}
+
+		delete(activeAnamClients, req.TaskID)
+	}
+
+	// Clean up task deduplication map
+	for taskKey, taskInfo := range activeTasksByKey {
+		if taskInfo.TaskID == req.TaskID {
+			delete(activeTasksByKey, taskKey)
+			s.Logger.Info().
+				Str("taskKey", taskKey).
+				Str("taskID", req.TaskID).
+				Msg("[PALABRA-STOP] Removed task from deduplication map")
+		}
 	}
 
 	// Send success response
 	respondWithJSON(w, http.StatusOK, PalabraStopResponse{
 		Success: true,
-	})
-}
-
-// PalabraTasks handles retrieving active translation tasks for a channel
-func (s *ServiceRouter) PalabraTasks(w http.ResponseWriter, r *http.Request) {
-	// Get channel from query parameter
-	channel := r.URL.Query().Get("channel")
-	if channel == "" {
-		s.Logger.Error().Msg("Missing channel parameter")
-		respondWithError(w, http.StatusBadRequest, "Missing required parameter: channel")
-		return
-	}
-
-	s.Logger.Info().Str("channel", channel).Msg("Fetching active translation tasks")
-
-	// Collect all tasks for this channel
-	var tasks []ActiveTask
-
-	activeTasks.Range(func(key, value interface{}) bool {
-		task := value.(ActiveTask)
-		if task.Channel == channel {
-			tasks = append(tasks, task)
-		}
-		return true // Continue iteration
-	})
-
-	s.Logger.Info().Int("count", len(tasks)).Str("channel", channel).Msg("Found active translation tasks")
-
-	// Return tasks
-	respondWithJSON(w, http.StatusOK, map[string]interface{}{
-		"tasks": tasks,
 	})
 }
 

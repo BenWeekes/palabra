@@ -17,8 +17,10 @@ import {useUserActionMenu} from '../../src/components/useUserActionMenu';
 import {TranslationMenuItem} from './TranslationMenuItem';
 import SDKEvents from '../../src/utils/SdkEvents';
 
-// Palabra UIDs start at 3000
+// Palabra UIDs start at 3000 (audio-only translation)
 const PALABRA_UID_BASE = 3000;
+// Anam UIDs start at 4000 (avatar video+audio)
+const ANAM_UID_BASE = 4000;
 
 interface TranslationStream {
   language: string;
@@ -62,6 +64,8 @@ interface TranslationContextType {
   isTranslating: (sourceUid: string) => boolean;
   availableLanguages: Language[];
   isPalabraUid: (uid: number | string) => boolean;
+  isAnamUid: (uid: number | string) => boolean;
+  isTranslationUid: (uid: number | string) => boolean;
 }
 
 const TranslationContext = createContext<TranslationContextType>({
@@ -71,6 +75,8 @@ const TranslationContext = createContext<TranslationContextType>({
   isTranslating: () => false,
   availableLanguages: [],
   isPalabraUid: () => false,
+  isAnamUid: () => false,
+  isTranslationUid: () => false,
 });
 
 export const useTranslation = () => useContext(TranslationContext);
@@ -96,6 +102,66 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
 
   // Track which remote users we're currently subscribed to
   const subscribedUsers = useRef<Set<string>>(new Set());
+
+  // Ref to always access current activeTranslations in event handlers (avoids stale closure)
+  const activeTranslationsRef = useRef<Map<string, ActiveTranslation>>(activeTranslations);
+
+  // Ref to store original Agora subscribe function (before monkey-patch)
+  const originalSubscribeRef = useRef<any>(null);
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    activeTranslationsRef.current = activeTranslations;
+  }, [activeTranslations]);
+
+  /**
+   * OVERRIDE DEFAULT SUBSCRIPTION BEHAVIOR (no core file edits needed!)
+   * Wrap the Agora SDK's subscribe() method to filter translation UIDs
+   */
+  useEffect(() => {
+    if (!rtcClient || !(rtcClient as any).client) return;
+
+    const client = (rtcClient as any).client;
+    const originalSubscribe = client.subscribe.bind(client);
+
+    // Store original subscribe so we can call it directly later
+    originalSubscribeRef.current = originalSubscribe;
+
+    let subscribeOverridden = false;
+
+    // Only override once
+    if (!subscribeOverridden) {
+      client.subscribe = async (user: any, mediaType: 'audio' | 'video') => {
+        const uidNum = typeof user.uid === 'string' ? parseInt(user.uid, 10) : user.uid;
+        const uidString = user.uid.toString();
+        const isTranslationUID = uidNum >= 3000 && uidNum < 5000;
+
+        // Check if this is a translation UID (3000-4999)
+        if (isTranslationUID) {
+          console.log('[Palabra] 🚫 Blocking auto-subscribe for translation UID', user.uid, mediaType);
+          return;
+        }
+
+        // CRITICAL: Also block sourceUid if it's currently being translated
+        // This prevents dual audio (original + translation) if source re-publishes
+        const isSourceBeingTranslated = activeTranslationsRef.current.has(uidString);
+        if (isSourceBeingTranslated) {
+          console.log('[Palabra] 🚫 Blocking auto-subscribe for sourceUid being translated:', user.uid, mediaType);
+          return;
+        }
+
+        // Normal UIDs: allow subscription
+        return originalSubscribe(user, mediaType);
+      };
+      subscribeOverridden = true;
+      console.log('[Palabra] ✓ Overridden client.subscribe() to filter translation UIDs');
+    }
+
+    // No cleanup - we want this override to persist
+    return () => {
+      // Could restore original here if needed, but usually not necessary
+    };
+  }, [rtcClient]);
 
   /**
    * Register the translation menu item
@@ -130,46 +196,45 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
 
   /**
    * Fetch existing translation tasks when joining channel
+   * NOTE: Disabled - /v1/palabra/tasks endpoint not implemented
    */
-  useEffect(() => {
-    const fetchTasks = async () => {
-      if (!channel) return;
-
-      // Get channel name - try different properties
-      const channelName = (channel as any).channel || (channel as any).name || channel;
-      if (!channelName || typeof channelName !== 'string') return;
-
-      try {
-        const backendUrl = $config.PALABRA_BACKEND_ENDPOINT;
-        const response = await fetch(`${backendUrl}/v1/palabra/tasks?channel=${channelName}`);
-
-        if (!response.ok) {
-          console.error('[Palabra] Failed to fetch tasks:', response.statusText);
-          return;
-        }
-
-        const data = await response.json();
-
-        // Store available translations (for discovery, not auto-subscribe)
-        if (data.tasks && Array.isArray(data.tasks)) {
-          const newMap = new Map<string, ActiveTranslation>();
-          data.tasks.forEach((task: any) => {
-            newMap.set(task.translationUid, {
-              sourceUid: task.sourceUid,
-              taskId: task.taskId,
-              targetLanguage: task.targetLanguage,
-              translationUid: task.translationUid,
-            });
-          });
-          setAvailableTranslations(newMap);
-        }
-      } catch (error) {
-        console.error('[Palabra] Error fetching tasks:', error);
-      }
-    };
-
-    fetchTasks();
-  }, [channel]);
+  // useEffect(() => {
+  //   const fetchTasks = async () => {
+  //     if (!channel) return;
+  //
+  //     const channelName = (channel as any).channel || (channel as any).name || channel;
+  //     if (!channelName || typeof channelName !== 'string') return;
+  //
+  //     try {
+  //       const backendUrl = $config.PALABRA_BACKEND_ENDPOINT;
+  //       const response = await fetch(`${backendUrl}/v1/palabra/tasks?channel=${channelName}`);
+  //
+  //       if (!response.ok) {
+  //         console.error('[Palabra] Failed to fetch tasks:', response.statusText);
+  //         return;
+  //       }
+  //
+  //       const data = await response.json();
+  //
+  //       if (data.tasks && Array.isArray(data.tasks)) {
+  //         const newMap = new Map<string, ActiveTranslation>();
+  //         data.tasks.forEach((task: any) => {
+  //           newMap.set(task.translationUid, {
+  //             sourceUid: task.sourceUid,
+  //             taskId: task.taskId,
+  //             targetLanguage: task.targetLanguage,
+  //             translationUid: task.translationUid,
+  //           });
+  //         });
+  //         setAvailableTranslations(newMap);
+  //       }
+  //     } catch (error) {
+  //       console.error('[Palabra] Error fetching tasks:', error);
+  //     }
+  //   };
+  //
+  //   fetchTasks();
+  // }, [channel]);
 
   const availableLanguages: Language[] = [
     {code: 'es', name: 'Spanish', flag: '🇪🇸'},
@@ -183,7 +248,7 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
   ];
 
   /**
-   * Check if a UID is a Palabra translation stream
+   * Check if a UID is a Palabra translation stream (audio-only, 3000-3099)
    */
   const isPalabraUid = useCallback((uid: number | string): boolean => {
     const numUid = typeof uid === 'string' ? parseInt(uid, 10) : uid;
@@ -191,11 +256,29 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
   }, []);
 
   /**
+   * Check if a UID is an Anam avatar stream (video+audio, 4000-4099)
+   */
+  const isAnamUid = useCallback((uid: number | string): boolean => {
+    const numUid = typeof uid === 'string' ? parseInt(uid, 10) : uid;
+    return numUid >= ANAM_UID_BASE && numUid < ANAM_UID_BASE + 100;
+  }, []);
+
+  /**
+   * Check if a UID is either Palabra or Anam stream
+   */
+  const isTranslationUid = useCallback((uid: number | string): boolean => {
+    return isPalabraUid(uid) || isAnamUid(uid);
+  }, [isPalabraUid, isAnamUid]);
+
+  /**
    * Unsubscribe from a user's audio
    */
   const unsubscribeFromUser = useCallback(
     async (uid: string) => {
       if (!rtcClient) return;
+
+      const client = (rtcClient as any).client;
+      if (!client) return;
 
       try {
         const remoteUsers = rtcClient.remoteUsers || [];
@@ -205,7 +288,7 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
           // Stop playing the audio
           user.audioTrack.stop();
           // Actually unsubscribe from the stream
-          await rtcClient.unsubscribe(user, 'audio');
+          await client.unsubscribe(user, 'audio');
         }
 
         subscribedUsers.current.delete(uid);
@@ -223,12 +306,15 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
     async (uid: string) => {
       if (!rtcClient) return;
 
+      const client = (rtcClient as any).client;
+      if (!client) return;
+
       try {
         const remoteUsers = rtcClient.remoteUsers || [];
         const user = remoteUsers.find((u: any) => u.uid.toString() === uid);
 
         if (user && user.hasAudio && user.audioTrack) {
-          await rtcClient.subscribe(user, 'audio');
+          await client.subscribe(user, 'audio');
           user.audioTrack.play();
           subscribedUsers.current.add(uid);
         }
@@ -252,21 +338,36 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
         // Get channel name - try different properties
         const channelName = channel.channel || channel.name || channel;
 
+        console.log('[Palabra] 🚀 Starting translation:', {
+          sourceUid,
+          sourceLanguage,
+          targetLanguage,
+          channel: channelName,
+        });
+
+        // Unsubscribe from original audio FIRST
+        await unsubscribeFromUser(sourceUid);
+
         // Call Backend
         const backendUrl = $config.PALABRA_BACKEND_ENDPOINT || $config.BACKEND_ENDPOINT;
         const url = `${backendUrl}/v1/palabra/start`;
+
+        console.log('[Palabra] 📡 Calling backend:', url);
+
+        const requestBody = {
+          channel: channelName || '',
+          sourceUid: sourceUid,
+          sourceLanguage: sourceLanguage,
+          targetLanguages: [targetLanguage],
+        };
+        console.log('[Palabra] 📤 Request body:', requestBody);
 
         const response = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            channel: channelName || '',
-            sourceUid: sourceUid,
-            sourceLanguage: sourceLanguage,
-            targetLanguages: [targetLanguage],
-          }),
+          body: JSON.stringify(requestBody),
         });
 
         if (!response.ok) {
@@ -274,6 +375,9 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
         }
 
         const data = await response.json();
+
+        // DEBUG: Log full backend response
+        console.log('[Palabra] Backend /v1/palabra/start response:', JSON.stringify(data, null, 2));
 
         // Check if translation task was successful
         if (!data.success) {
@@ -291,13 +395,12 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
           throw new Error('No translation stream returned');
         }
 
-        // Unsubscribe from original audio
-        await unsubscribeFromUser(sourceUid);
+        console.log('[Palabra] Translation stream UID:', translationStream.uid, 'Type:', isAnamUid(translationStream.uid) ? 'Anam (avatar)' : 'Palabra (audio-only)');
 
-        // Store translation info
+        // Update with real translation info
         const translation: ActiveTranslation = {
           sourceUid,
-          taskId: data.taskId,  // Backend returns taskId directly, not data.translation_task.task_id
+          taskId: data.taskId,
           targetLanguage,
           translationUid: translationStream.uid,
         };
@@ -309,15 +412,110 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
           taskId: data.taskId,
         });
 
-        setActiveTranslations(prev => {
-          const newMap = new Map(prev);
-          newMap.set(sourceUid, translation);
-          console.log('[Palabra] Active translations updated:', Array.from(newMap.entries()));
-          return newMap;
+        // Update ref immediately (synchronous) so late-arrival check sees it
+        const newMap = new Map(activeTranslationsRef.current);
+        newMap.set(sourceUid, translation);
+        activeTranslationsRef.current = newMap;
+
+        // Update state (asynchronous - triggers re-render)
+        setActiveTranslations(newMap);
+
+        console.log('[Palabra] ✓ Stored translation in activeTranslations:', {
+          sourceUid,
+          translationUid: translation.translationUid,
+          mapSize: newMap.size,
+          allEntries: Array.from(newMap.entries()).map(([k, v]) => ({
+            sourceUid: k,
+            translationUid: v.translationUid,
+          })),
         });
 
-        // The translation stream will be subscribed to via the user-published handler
-        console.log('[Palabra] Waiting for translation stream UID', translationStream.uid, 'to publish...');
+        // RACE CONDITION FIX: Check if UID already published while we were waiting for backend response
+        const client = (rtcClient as any).client;
+        if (client) {
+          // Use native Agora SDK's remoteUsers, not App Builder's wrapper
+          // App Builder's rtcClient.remoteUsers only includes subscribed users
+          const remoteUsers = client.remoteUsers || [];
+          console.log('[Palabra] 🔍 Checking remoteUsers for late arrival. Looking for UID:', translationStream.uid);
+          console.log('[Palabra] 🔍 remoteUsers count:', remoteUsers.length);
+          console.log('[Palabra] 🔍 remoteUsers UIDs:', remoteUsers.map((u: any) => u.uid));
+
+          const existingUser = remoteUsers.find((u: any) => u.uid.toString() === translationStream.uid);
+          console.log('[Palabra] 🔍 existingUser found?', !!existingUser, 'Looking for:', translationStream.uid);
+
+          if (existingUser) {
+            console.log('[Palabra] ⚡ Translation UID', translationStream.uid, 'already published (late arrival) - subscribing now');
+            console.log('[Palabra] 🔍 User object before subscribe:', {
+              uid: existingUser.uid,
+              hasAudio: existingUser.hasAudio,
+              hasVideo: existingUser.hasVideo,
+              audioTrack: !!existingUser.audioTrack,
+              videoTrack: !!existingUser.videoTrack,
+            });
+
+            try {
+              // Use original subscribe function to bypass monkey-patch
+              const originalSubscribe = originalSubscribeRef.current;
+              if (!originalSubscribe) {
+                console.error('[Palabra] ❌ Original subscribe function not available');
+                return;
+              }
+
+              // Subscribe to audio for Anam UIDs or Palabra UIDs
+              if ((isAnamUid(translationStream.uid) || isPalabraUid(translationStream.uid)) && existingUser.hasAudio) {
+                console.log('[Palabra] 🔄 Subscribing to audio for UID', translationStream.uid);
+                await originalSubscribe(existingUser, 'audio');
+
+                console.log('[Palabra] 🔍 After subscribe, user.audioTrack:', !!existingUser.audioTrack);
+
+                if (existingUser.audioTrack) {
+                  try {
+                    existingUser.audioTrack.play();
+                    console.log('[Palabra] ✓ Playing translation audio from UID', translationStream.uid);
+                  } catch (err: any) {
+                    console.error('[Palabra] ❌ Failed to play audio for UID', translationStream.uid, ':', err);
+                  }
+                } else {
+                  console.log('[Palabra] ⚠️ No audio track on user object after subscribe for UID', translationStream.uid);
+                  console.log('[Palabra] 🔍 User object keys:', Object.keys(existingUser));
+                }
+              }
+
+              // Subscribe to video for Anam UIDs (play in source user's tile)
+              if (isAnamUid(translationStream.uid) && existingUser.hasVideo) {
+                console.log('[Palabra] 🔄 Subscribing to video for UID', translationStream.uid);
+                await originalSubscribe(existingUser, 'video');
+
+                console.log('[Palabra] 🔍 After subscribe, user.videoTrack:', !!existingUser.videoTrack);
+
+                if (existingUser.videoTrack) {
+                  // Play Anam avatar video in the source user's tile (sourceUid from outer scope)
+                  console.log('[Palabra] ✓ Playing Anam avatar video in place of source UID', sourceUid);
+
+                  // Stop the original video if it's playing
+                  const sourceUser = client.remoteUsers.find((u: any) => u.uid.toString() === sourceUid);
+                  if (sourceUser && sourceUser.videoTrack) {
+                    console.log('[Palabra] Stopping original video for source UID', sourceUid);
+                    sourceUser.videoTrack.stop();
+                  }
+
+                  // Play Anam avatar video in the source user's container div
+                  // Agora creates <div id="{uid}" class="video-container"> for each user
+                  // Pass the UID as container ID and Agora will replace the contents
+                  existingUser.videoTrack.play(sourceUid);
+                  console.log('[Palabra] ✓ Anam avatar video now playing in tile for UID', sourceUid);
+                } else {
+                  console.log('[Palabra] ⚠️ No video track on user object after subscribe for UID', translationStream.uid);
+                  console.log('[Palabra] 🔍 User object keys:', Object.keys(existingUser));
+                }
+              }
+            } catch (error) {
+              console.error('[Palabra] ❌ Failed to subscribe to late-arrival UID', translationStream.uid, ':', error);
+            }
+          } else {
+            console.log('[Palabra] ✓ Translation task created for UID', translationStream.uid, '- will subscribe when it publishes');
+          }
+        }
       } catch (error) {
         console.error('[Palabra] Failed to start translation:', error);
         // Re-subscribe to original if translation failed
@@ -352,8 +550,34 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
         // Unsubscribe from translation stream
         await unsubscribeFromUser(translation.translationUid);
 
-        // Re-subscribe to original audio
-        await subscribeToUser(sourceUid);
+        // Re-subscribe to original audio AND video
+        const client = (rtcClient as any).client;
+        if (client) {
+          const remoteUsers = client.remoteUsers || [];
+          const sourceUser = remoteUsers.find((u: any) => u.uid.toString() === sourceUid);
+
+          if (sourceUser) {
+            // Re-subscribe to audio
+            if (sourceUser.hasAudio) {
+              await subscribeToUser(sourceUid);
+            }
+
+            // CRITICAL FIX: Re-subscribe to video (was missing)
+            if (sourceUser.hasVideo) {
+              try {
+                const originalSubscribe = originalSubscribeRef.current;
+                await originalSubscribe(sourceUser, 'video');
+                if (sourceUser.videoTrack) {
+                  // Play video in the user's tile
+                  sourceUser.videoTrack.play(sourceUid);
+                  console.log('[Palabra] ✓ Re-subscribed to original video for UID', sourceUid);
+                }
+              } catch (error) {
+                console.error('[Palabra] Failed to re-subscribe to video:', error);
+              }
+            }
+          }
+        }
 
         // Remove from active translations
         setActiveTranslations(prev => {
@@ -379,60 +603,116 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
   );
 
   /**
-   * Handle remote user published - subscribe to translation streams only if explicitly requested
+   * Handle remote user published - listen directly to Agora SDK to get user object
+   * Subscribe to translation streams only if explicitly requested
    */
   useEffect(() => {
     if (!rtcClient) return;
 
-    const handleUserPublished = async (uid: UidType, trackType: 'audio' | 'video') => {
-      if (trackType !== 'audio') return;
+    const client = (rtcClient as any).client;
+    if (!client) return;
 
-      const uidString = uid.toString();
+    console.log('[Palabra] useEffect: Registering Agora user-published handler (direct SDK access)');
 
-      // Check if this is a Palabra translation stream
-      if (isPalabraUid(uid)) {
-        console.log('[Palabra] Detected Palabra UID publishing:', uidString);
-        console.log('[Palabra] Active translations:', Array.from(activeTranslations.entries()));
+    const handleUserPublished = async (user: any, mediaType: 'audio' | 'video') => {
+      const uidString = user.uid.toString();
+      const uid = typeof user.uid === 'string' ? parseInt(user.uid, 10) : user.uid;
 
-        // ONLY subscribe if this user explicitly requested this translation
-        // Check activeTranslations (not availableTranslations)
-        const translation = Array.from(activeTranslations.values()).find(
+      // Check if this is a translation UID (3000-4999)
+      if (isTranslationUid(uid)) {
+        console.log('[Palabra] 📡 Translation UID published:', uidString, 'Type:', mediaType);
+
+        // Use ref to get current activeTranslations (avoids stale closure)
+        const currentTranslations = activeTranslationsRef.current;
+
+        // Did I request this specific UID?
+        const translation = Array.from(currentTranslations.values()).find(
           t => t.translationUid === uidString,
         );
 
-        if (translation) {
-          console.log('[Palabra] Found matching translation request, subscribing to UID', uidString);
-          // This user requested this translation, subscribe to it
-          try {
-            const remoteUsers = rtcClient.remoteUsers || [];
-            const user = remoteUsers.find((u: any) => u.uid.toString() === uidString);
+        console.log('[Palabra] Looking for UID', uidString, 'in Map (size:', currentTranslations.size + ') - Found:', !!translation);
 
-            if (user && user.hasAudio) {
-              console.log('[Palabra] Subscribing to audio track for UID', uidString);
-              await rtcClient.subscribe(user, 'audio');
+        if (translation) {
+          console.log('[Palabra] ✓ Requested UID', uidString, '- subscribing to', mediaType);
+
+          try {
+            // Use original subscribe function to bypass monkey-patch
+            const originalSubscribe = originalSubscribeRef.current;
+            if (!originalSubscribe) {
+              console.error('[Palabra] ❌ Original subscribe function not available');
+              return;
+            }
+
+            // Subscribe to audio (only for Anam UIDs 4000+)
+            if (mediaType === 'audio' && isAnamUid(uid)) {
+              await originalSubscribe(user, 'audio');
               if (user.audioTrack) {
-                user.audioTrack.play();
-                console.log('[Palabra] Playing translated audio from UID', uidString);
+                try {
+                  user.audioTrack.play();
+                  console.log('[Palabra] ✓ Playing Anam avatar audio from UID', uidString);
+                } catch (err: any) {
+                  console.error('[Palabra] ❌ Failed to play Anam audio:', err);
+                }
               }
-            } else {
-              console.warn('[Palabra] User found but no audio:', {hasUser: !!user, hasAudio: user?.hasAudio});
+            } else if (mediaType === 'audio' && isPalabraUid(uid)) {
+              // Subscribe to Palabra audio (3000+) when not using Anam (audio-only translation)
+              await originalSubscribe(user, 'audio');
+              if (user.audioTrack) {
+                try {
+                  user.audioTrack.play();
+                  console.log('[Palabra] ✓ Playing Palabra translation audio (audio-only mode) from UID', uidString);
+                } catch (err: any) {
+                  console.error('[Palabra] ❌ Failed to play Palabra audio:', err);
+                }
+              }
+            }
+
+            // Subscribe to video (only for Anam UIDs 4000+)
+            if (mediaType === 'video' && isAnamUid(uid)) {
+              await originalSubscribe(user, 'video');
+              if (user.videoTrack) {
+                // Find the translation this video belongs to
+                const existingTranslation = Array.from(activeTranslationsRef.current.values()).find(
+                  t => t.translationUid === uidString,
+                );
+
+                if (existingTranslation) {
+                  const sourceUid = existingTranslation.sourceUid;
+                  console.log('[Palabra] ✓ Playing Anam avatar video in place of source UID', sourceUid);
+
+                  // Stop the original video if it's playing
+                  const sourceUser = client.remoteUsers.find((u: any) => u.uid.toString() === sourceUid);
+                  if (sourceUser && sourceUser.videoTrack) {
+                    console.log('[Palabra] Stopping original video for source UID', sourceUid);
+                    sourceUser.videoTrack.stop();
+                  }
+
+                  // Play Anam avatar video in the source user's container div
+                  // Agora creates <div id="{uid}" class="video-container"> for each user
+                  // Pass the UID as container ID and Agora will replace the contents
+                  user.videoTrack.play(sourceUid);
+                  console.log('[Palabra] ✓ Anam avatar video now playing in tile for UID', sourceUid);
+                }
+              }
             }
           } catch (error) {
-            console.error('[Palabra] Failed to subscribe to translation:', error);
+            console.error('[Palabra] ❌ Failed to subscribe to UID', uidString + ':', error);
           }
         } else {
-          console.log('[Palabra] Palabra UID', uidString, 'publishing but not requested by this user (ignoring)');
+          console.log('[Palabra] ℹ️ UID', uidString, 'not requested by this user (ignoring)');
         }
       }
-      // Regular user UIDs are handled by default App Builder logic
     };
 
-    const unbind = SDKEvents.on('rtc-user-published', handleUserPublished);
+    // Listen directly to Agora SDK client (rtcClient.client is the actual IAgoraRTCClient)
+    (rtcClient as any).client.on('user-published', handleUserPublished);
 
     return () => {
-      unbind();
+      (rtcClient as any).client.off('user-published', handleUserPublished);
     };
-  }, [rtcClient, activeTranslations, isPalabraUid]);
+  }, [rtcClient, isTranslationUid, isAnamUid, isPalabraUid]);
+
+  // NOTE: No continuous subscription needed - we listen directly to Agora SDK's user-published event above
 
   /**
    * Cleanup on unmount
@@ -452,6 +732,8 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
     isTranslating,
     availableLanguages,
     isPalabraUid,
+    isAnamUid,
+    isTranslationUid,
   };
 
   return (
