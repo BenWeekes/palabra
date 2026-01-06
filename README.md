@@ -2,22 +2,299 @@
 
 Real-time speech translation with optional lip-synced avatar for Agora video conferencing.
 
-## Quick Start
+## Quick Start (Development)
 
 ### Backend
 ```bash
-cd app-builder-backend
+cd server
 docker compose up --build
-# Runs at http://localhost:8081
+# Runs at http://localhost:8080
 ```
 
 ### Frontend
 ```bash
-cd app-builder-core/template
+cd client
 npm install
 npm run web
 # Runs at http://localhost:9000
 ```
+
+## Production Deployment (Ubuntu Linux)
+
+### Prerequisites
+
+```bash
+# Update system
+sudo apt update && sudo apt upgrade -y
+
+# Install Docker
+sudo apt install -y docker.io docker-compose
+
+# Install Node.js 18+ and npm
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# Install Nginx
+sudo apt install -y nginx
+
+# Install Certbot (for SSL)
+sudo apt install -y certbot python3-certbot-nginx
+```
+
+### 1. Clone Repository
+
+```bash
+cd /opt
+sudo git clone https://github.com/BenWeekes/palabra.git
+cd palabra
+```
+
+### 2. Setup Backend
+
+```bash
+cd server
+
+# Create .env file with your credentials
+sudo nano .env
+```
+
+**Required .env configuration:**
+```bash
+# Agora credentials
+APP_ID=your_agora_app_id
+APP_CERTIFICATE=your_agora_certificate
+CUSTOMER_ID=your_customer_id
+CUSTOMER_CERTIFICATE=your_customer_certificate
+
+# Palabra credentials
+PALABRA_CLIENT_ID=your_palabra_client_id
+PALABRA_CLIENT_SECRET=your_palabra_client_secret
+
+# Server configuration
+PORT=8080
+SCHEME=https
+ALLOWED_ORIGIN=https://yourdomain.com
+
+# Database
+POSTGRES_USER=appbuilder
+POSTGRES_PASSWORD=strong_password_here
+POSTGRES_DB=appbuilder
+DATABASE_URL=postgresql://appbuilder:strong_password_here@postgres:5432/appbuilder?sslmode=disable
+
+# Translation mode
+ENABLE_ANAM=false  # Set true for avatar mode
+
+# Anam credentials (only if ENABLE_ANAM=true)
+ANAM_API_KEY=your_base64_key
+ANAM_BASE_URL=https://api.anam.ai/v1
+ANAM_AVATAR_ID=your_avatar_uuid
+ANAM_QUALITY=high
+ANAM_VIDEO_ENCODING=H264
+```
+
+**Start backend:**
+```bash
+sudo docker compose up -d --build
+
+# Check logs
+sudo docker compose logs -f
+```
+
+### 3. Setup Frontend
+
+```bash
+cd /opt/palabra/client
+
+# Update backend endpoint
+sudo nano customization/config.json
+```
+
+**Update config.json:**
+```json
+{
+  "PALABRA_BACKEND_ENDPOINT": "https://yourdomain.com/api"
+}
+```
+
+**Build production frontend:**
+```bash
+npm install
+npm run build
+
+# Copy build to web server directory
+sudo mkdir -p /var/www/palabra
+sudo cp -r dist/* /var/www/palabra/
+sudo chown -R www-data:www-data /var/www/palabra
+```
+
+### 4. Configure Nginx
+
+```bash
+sudo nano /etc/nginx/sites-available/palabra
+```
+
+**Nginx configuration:**
+```nginx
+# Redirect HTTP to HTTPS
+server {
+    listen 80;
+    server_name yourdomain.com;
+    return 301 https://$server_name$request_uri;
+}
+
+# HTTPS server
+server {
+    listen 443 ssl http2;
+    server_name yourdomain.com;
+
+    # SSL certificates (Let's Encrypt - configured in step 5)
+    ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
+
+    # SSL settings
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    # Frontend - serve React build
+    location / {
+        root /var/www/palabra;
+        try_files $uri $uri/ /index.html;
+
+        # Security headers
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+    }
+
+    # Backend API - proxy to Docker
+    location /api/ {
+        proxy_pass http://localhost:8080/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+
+        # Timeout settings for long-running requests
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 75s;
+    }
+
+    # Client logs size limit
+    client_max_body_size 10M;
+}
+```
+
+**Enable site:**
+```bash
+sudo ln -s /etc/nginx/sites-available/palabra /etc/nginx/sites-enabled/
+sudo nginx -t  # Test configuration
+sudo systemctl restart nginx
+```
+
+### 5. Setup SSL (Let's Encrypt)
+
+```bash
+# Get SSL certificate (interactive - follow prompts)
+sudo certbot --nginx -d yourdomain.com
+
+# Verify auto-renewal is enabled
+sudo systemctl status certbot.timer
+
+# Test renewal (dry run)
+sudo certbot renew --dry-run
+```
+
+### 6. Firewall Configuration
+
+```bash
+# Allow HTTP, HTTPS, and SSH
+sudo ufw allow 22/tcp
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw enable
+```
+
+### 7. Start on Boot
+
+```bash
+# Docker containers already restart automatically (check docker-compose.yml)
+# Nginx starts on boot by default
+
+# Verify services
+sudo systemctl enable nginx
+sudo systemctl enable docker
+
+# Check status
+sudo systemctl status nginx
+sudo systemctl status docker
+```
+
+### 8. Verify Deployment
+
+```bash
+# Check backend is running
+curl http://localhost:8080/health  # Should return 200 OK
+
+# Check frontend files
+ls -la /var/www/palabra
+
+# Check Nginx is serving
+curl -I http://yourdomain.com  # Should redirect to HTTPS
+
+# Check SSL
+curl -I https://yourdomain.com  # Should return 200 OK
+
+# Monitor logs
+sudo docker compose logs -f  # Backend logs
+sudo tail -f /var/log/nginx/access.log  # Nginx access logs
+sudo tail -f /var/log/nginx/error.log   # Nginx error logs
+```
+
+## Updating Production
+
+```bash
+cd /opt/palabra
+
+# Pull latest changes
+sudo git pull
+
+# Update backend
+cd server
+sudo docker compose down
+sudo docker compose up -d --build
+
+# Update frontend
+cd ../client
+npm install
+npm run build
+sudo cp -r dist/* /var/www/palabra/
+
+# Reload Nginx (zero downtime)
+sudo nginx -s reload
+```
+
+## System Requirements
+
+**Minimum:**
+- Ubuntu 20.04+ (x86-64 architecture)
+- 2 CPU cores
+- 4GB RAM
+- 20GB storage
+- Public IP with domain name
+
+**Recommended:**
+- Ubuntu 22.04 LTS (x86-64)
+- 4 CPU cores
+- 8GB RAM
+- 50GB SSD storage
+- CDN for frontend (optional)
+
+**Important**: Server must be x86-64 architecture (not ARM) due to Agora SDK binary requirements.
 
 ## Two Operating Modes
 
