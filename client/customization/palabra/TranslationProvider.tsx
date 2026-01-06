@@ -146,11 +146,13 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
         // This prevents dual audio (original + translation) if source re-publishes
         const isSourceBeingTranslated = activeTranslationsRef.current.has(uidString);
         if (isSourceBeingTranslated) {
-          console.log('[Palabra] 🚫 Blocking auto-subscribe for sourceUid being translated:', user.uid, mediaType);
+          const translation = activeTranslationsRef.current.get(uidString);
+          console.log('[Palabra] 🚫 Blocking auto-subscribe for sourceUid being translated:', user.uid, mediaType, '(translationUid:', translation?.translationUid, ')');
           return;
         }
 
         // Normal UIDs: allow subscription
+        console.log('[Palabra] ✅ Allowing auto-subscribe for normal UID:', user.uid, mediaType, '(Map size:', activeTranslationsRef.current.size + ')');
         return originalSubscribe(user, mediaType);
       };
       subscribeOverridden = true;
@@ -275,25 +277,47 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
    */
   const unsubscribeFromUser = useCallback(
     async (uid: string) => {
-      if (!rtcClient) return;
+      if (!rtcClient) {
+        console.log('[Palabra] ⚠️ Cannot unsubscribe - rtcClient not available');
+        return;
+      }
 
       const client = (rtcClient as any).client;
-      if (!client) return;
+      if (!client) {
+        console.log('[Palabra] ⚠️ Cannot unsubscribe - client not available');
+        return;
+      }
 
       try {
-        const remoteUsers = rtcClient.remoteUsers || [];
+        // Use native SDK's remoteUsers (client), not wrapper (rtcClient)
+        const remoteUsers = client.remoteUsers || [];
         const user = remoteUsers.find((u: any) => u.uid.toString() === uid);
+
+        console.log('[Palabra] 🔇 Unsubscribing from UID', uid);
+        console.log('[Palabra]   - remoteUsers count:', remoteUsers.length);
+        console.log('[Palabra]   - remoteUsers UIDs:', remoteUsers.map((u: any) => u.uid));
+        console.log('[Palabra]   - User found:', !!user, 'Has audio:', !!user?.audioTrack);
 
         if (user && user.audioTrack) {
           // Stop playing the audio
           user.audioTrack.stop();
+          console.log('[Palabra] ⏹️ Stopped audio playback for UID', uid);
+
           // Actually unsubscribe from the stream
           await client.unsubscribe(user, 'audio');
+          console.log('[Palabra] ✅ Unsubscribed from audio for UID', uid);
+        } else if (user && user.hasAudio) {
+          // User exists but no audioTrack - try to unsubscribe anyway
+          console.log('[Palabra] ⚠️ User has audio stream but no track - trying to unsubscribe anyway');
+          await client.unsubscribe(user, 'audio');
+          console.log('[Palabra] ✅ Unsubscribed from audio for UID', uid);
+        } else {
+          console.log('[Palabra] ℹ️ UID', uid, 'not found or not publishing audio - nothing to unsubscribe');
         }
 
         subscribedUsers.current.delete(uid);
       } catch (error) {
-        console.error(`[Palabra] Error unsubscribing from ${uid}:`, error);
+        console.error(`[Palabra] ❌ Error unsubscribing from ${uid}:`, error);
       }
     },
     [rtcClient],
@@ -345,7 +369,27 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
           channel: channelName,
         });
 
-        // Unsubscribe from original audio FIRST
+        // CRITICAL: Store placeholder in activeTranslations IMMEDIATELY
+        // This prevents race condition where UID publishes before API response
+        const placeholderTranslation = {
+          sourceUid,
+          translationUid: '', // Will be updated when API responds
+          targetLanguage,
+          taskId: '',
+        };
+
+        setActiveTranslations(prev => {
+          const newMap = new Map(prev);
+          newMap.set(sourceUid, placeholderTranslation);
+          return newMap;
+        });
+
+        // Also update ref synchronously
+        activeTranslationsRef.current.set(sourceUid, placeholderTranslation);
+
+        console.log('[Palabra] 🔒 Pre-blocked sourceUid in Map (size now:', activeTranslationsRef.current.size, ')');
+
+        // Unsubscribe from original audio AFTER blocking
         await unsubscribeFromUser(sourceUid);
 
         // Call Backend
@@ -397,7 +441,7 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
 
         console.log('[Palabra] Translation stream UID:', translationStream.uid, 'Type:', isAnamUid(translationStream.uid) ? 'Anam (avatar)' : 'Palabra (audio-only)');
 
-        // Update with real translation info
+        // Update placeholder with real translation info
         const translation: ActiveTranslation = {
           sourceUid,
           taskId: data.taskId,
@@ -411,6 +455,8 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
           targetLanguage,
           taskId: data.taskId,
         });
+
+        console.log('[Palabra] 🔄 Updating placeholder with real translationUid:', translationStream.uid);
 
         // Update ref immediately (synchronous) so late-arrival check sees it
         const newMap = new Map(activeTranslationsRef.current);
@@ -626,11 +672,15 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
         const currentTranslations = activeTranslationsRef.current;
 
         // Did I request this specific UID?
+        // Only match if translationUid exactly matches (backend has told us which UID to use)
         const translation = Array.from(currentTranslations.values()).find(
           t => t.translationUid === uidString,
         );
 
         console.log('[Palabra] Looking for UID', uidString, 'in Map (size:', currentTranslations.size + ') - Found:', !!translation);
+        if (translation) {
+          console.log('[Palabra] 🎯 Match details - translationUid:', translation.translationUid, 'sourceUid:', translation.sourceUid);
+        }
 
         if (translation) {
           console.log('[Palabra] ✓ Requested UID', uidString, '- subscribing to', mediaType);

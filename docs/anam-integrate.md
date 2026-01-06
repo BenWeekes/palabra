@@ -122,7 +122,12 @@ User B subscribes to UID 4000:
 - Joins channel as UID 5000 (subscriber-only)
 - Subscribes to Palabra UID 3000
 - Audio callback forwards PCM to Anam
-- Silence detection (500ms threshold) → voice_end
+- **Voice Activity Detection (VAD)**:
+  - Ring buffer (10 frames = 100ms pre-roll)
+  - RMS threshold detection (default: 100)
+  - Sends pre-roll when voice detected
+  - Continues sending for 500ms after silence
+  - Sends voice_end after 500ms silence
 
 **services/palabra.go** (MODIFIED):
 - Lines 300-405: `ENABLE_ANAM` flag logic
@@ -179,7 +184,7 @@ if enableAnam {
 return streams
 ```
 
-**agora_bot.go - Audio forwarding**:
+**agora_bot.go - Audio forwarding with VAD**:
 
 ```go
 type AgoraBot struct {
@@ -189,43 +194,115 @@ type AgoraBot struct {
   botToken    string
   targetUID   string      // "3000" (Palabra translation)
   anamClient  *AnamClient
-  rtcService  unsafe.Pointer
-  connection  unsafe.Pointer
+  conn        *agoraservice.RtcConnection
+
+  // Voice Activity Detection (VAD) state
+  audioBuffer   [][]byte // Ring buffer for pre-roll (10 frames = ~100ms)
+  bufferIndex   int      // Current position in ring buffer
+  rmsThreshold  int64    // CRITICAL: Must be int64 to match RMS return type
+  sendingAudio  bool     // Currently sending audio to Anam
+  silenceFrames int      // Count consecutive silent frames
+  frameCount    int      // Total frames forwarded
 }
 
 func (b *AgoraBot) Start() error {
   // Initialize Agora SDK
-  b.rtcService = C.agora_service_initialize(...)
-  b.connection = C.agora_rtc_conn_create(...)
+  svcCfg := agoraservice.NewAgoraServiceConfig()
+  svcCfg.AppId = b.appID
+  agoraservice.Initialize(svcCfg)
+
+  // Create connection
+  conCfg := &agoraservice.RtcConnectionConfig{
+    AutoSubscribeAudio: true,
+    ClientRole:         agoraservice.ClientRoleBroadcaster,
+  }
+  b.conn = agoraservice.NewRtcConnection(conCfg, publishConfig)
 
   // Register audio callback
-  C.agora_rtc_conn_register_observer(..., OnPlaybackAudioFrameBeforeMixing)
+  audioObserver := &agoraservice.AudioFrameObserver{
+    OnPlaybackAudioFrameBeforeMixing: func(..., frame *agoraservice.AudioFrame, ...) bool {
+      if userId == b.targetUID {
+        // Convert to int16 samples
+        inputSamples := bytesToInt16(frame.Buffer)
 
-  // Join channel as subscriber
-  C.agora_rtc_conn_connect(..., b.channel, b.botUID, b.botToken)
+        // Calculate RMS (returns int64)
+        _, rms := isFrameSilent(inputSamples)
+
+        // Upsample 16kHz → 24kHz
+        outputSamples := upsample16to24(inputSamples)
+        outputBytes := int16ToBytes(outputSamples)
+
+        // VOICE ACTIVITY DETECTION
+        // Store frame in ring buffer (for pre-roll)
+        b.audioBuffer[b.bufferIndex] = outputBytes
+        b.bufferIndex = (b.bufferIndex + 1) % len(b.audioBuffer)
+
+        // Check if voice detected (RMS > threshold)
+        voiceDetected := rms > b.rmsThreshold  // Both int64 - type safe
+
+        if voiceDetected {
+          if !b.sendingAudio {
+            // START sending - send pre-roll buffer first
+            fmt.Printf("[AgoraBot] 🎤 VOICE DETECTED (RMS=%d) - Starting with 100ms pre-roll\n", rms)
+
+            // Send last 10 frames (~100ms)
+            for i := 0; i < len(b.audioBuffer); i++ {
+              idx := (b.bufferIndex + i) % len(b.audioBuffer)
+              if b.audioBuffer[idx] != nil {
+                prerollB64 := base64.StdEncoding.EncodeToString(b.audioBuffer[idx])
+                b.anamClient.SendAudioWithSampleRate(prerollB64, 24000)
+              }
+            }
+
+            b.sendingAudio = true
+          }
+
+          // Reset silence counter
+          b.silenceFrames = 0
+
+          // Send current frame
+          audioB64 := base64.StdEncoding.EncodeToString(outputBytes)
+          b.anamClient.SendAudioWithSampleRate(audioB64, 24000)
+          b.frameCount++
+
+        } else if b.sendingAudio {
+          // Silent frame, but still sending (tail period)
+          b.silenceFrames++
+
+          if b.silenceFrames < 50 {  // 50 frames = 500ms
+            // Still in tail - keep sending
+            audioB64 := base64.StdEncoding.EncodeToString(outputBytes)
+            b.anamClient.SendAudioWithSampleRate(audioB64, 24000)
+            b.frameCount++
+          } else {
+            // 500ms silence - STOP
+            fmt.Printf("[AgoraBot] 🔇 SILENCE for 500ms - Stopping stream\n")
+            b.anamClient.SendVoiceEnd()
+            b.sendingAudio = false
+            b.silenceFrames = 0
+            b.frameCount = 0
+          }
+        }
+      }
+      return true
+    },
+  }
+  b.conn.RegisterAudioFrameObserver(audioObserver, 0, nil)
+
+  // Connect to channel
+  b.conn.Connect(b.token, b.channel, b.botUID)
 
   return nil
 }
 
-// Audio callback (called by Agora SDK for each frame)
-func OnPlaybackAudioFrameBeforeMixing(userId string, frame *AudioFrame, ...) {
-  if userId == b.targetUID {  // "3000"
-    // Upsample 16kHz → 24kHz (Anam requirement)
-    upsampled := upsample(frame.Buffer, 16000, 24000)
-
-    // Detect silence using RMS energy
-    if isSilence(upsampled) {
-      silenceDuration += 10ms
-      if silenceDuration >= 500ms {
-        b.anamClient.SendVoiceEnd()
-        silenceDuration = 0
-      }
-    } else {
-      // Forward to Anam
-      audioB64 := base64.StdEncoding.EncodeToString(upsampled)
-      b.anamClient.SendAudioWithSampleRate(audioB64, 24000)
-    }
+// isFrameSilent calculates RMS energy (returns int64)
+func isFrameSilent(samples []int16) (bool, int64) {
+  var sum int64
+  for _, sample := range samples {
+    sum += int64(sample) * int64(sample)
   }
+  rms := sum / int64(len(samples))
+  return rms < 100, rms
 }
 ```
 
@@ -564,6 +641,23 @@ docker logs server 2>&1 | grep -E "(botUID|anamUID)"
    docker exec server ls /usr/local/lib/*.so
    # Should list Agora .so files
    ```
+
+#### Build Fails with Type Mismatch
+
+**Symptom**: `invalid operation: rms > b.rmsThreshold (mismatched types int64 and int)`
+
+**Cause**: The `isFrameSilent()` function returns `int64` for RMS, but `rmsThreshold` was declared as `int`.
+
+**Fix**: Ensure `rmsThreshold` field is `int64` in `AgoraBot` struct:
+
+```go
+type AgoraBot struct {
+  // ...
+  rmsThreshold  int64    // NOT int
+}
+```
+
+**Why**: Go requires exact type matches for comparison operators. The RMS calculation uses `int64` to prevent overflow with large audio samples, so threshold must match.
 
 ## Testing Checklist
 
