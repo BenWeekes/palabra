@@ -354,6 +354,75 @@ npm run web
 **Files to delete**:
 - ✅ ANAM_STATUS.md (superseded by new docs)
 
+## Recent Improvements (January 6, 2026)
+
+### Voice Cloning
+
+**File**: `services/palabra.go:224-238`
+
+Added voice cloning options to Palabra API request:
+```go
+Options: map[string]interface{}{
+    "speech_generation": map[string]interface{}{
+        "voice_cloning": true,
+        "voice_timbre_detection": map[string]interface{}{
+            "enabled": true,
+            "high_timbre_voices": []string{"default_high"},
+            "low_timbre_voices": []string{"default_low"},
+        },
+    },
+}
+```
+
+**Impact**: Translated audio now uses voice cloning to match the original speaker's voice characteristics.
+
+### Auto-Detect Source Language
+
+**File**: `TranslationMenuItem.tsx:57`
+
+Changed from hardcoded `'en'` to `'auto'`:
+```typescript
+await startTranslation(uidString, 'auto', languageCode);
+```
+
+**Impact**: Palabra automatically detects source language - no need for user to specify.
+
+### Stop Translation Audio/Video Restore Fix
+
+**File**: `TranslationProvider.tsx:599-650`
+
+**Problem**: When stopping translation, original audio was blocked by monkey-patch because sourceUid was still in Map.
+
+**Fix**:
+1. Remove sourceUid from Map FIRST (line 601-609)
+2. Update ref synchronously (line 608)
+3. Then re-subscribe to audio and video (line 619-650)
+
+**Video fit mode fix** (line 644):
+```typescript
+sourceUser.videoTrack.play(sourceUid, {fit: 'contain'});
+```
+
+**subscribeToUser fix** (line 337-363):
+- Use native SDK's `client.remoteUsers` (not wrapper)
+- Use `originalSubscribeRef.current` to bypass monkey-patch
+- Don't require `audioTrack` to exist before subscribing
+
+**Impact**: After stopping translation, user hears original audio again and video displays correctly (fit, not fill).
+
+### Language Selector UI - 3x3 Grid
+
+**File**: `TranslationMenuItem.tsx:92-105, 119-163`
+
+**Changed from**: Large scrollable modal that went off-screen
+
+**Changed to**: Compact 3x3 grid (340px wide, 96px per cell):
+- 9 languages: English, Spanish, French, German, Japanese, Chinese, Portuguese, Italian, Korean
+- Flag emoji (32px) above language name
+- Fixed container width with calculated spacing
+
+**Impact**: Clean, centered dropdown that fits on all screens.
+
 ## Critical Bug Fixes (January 2025)
 
 ### Fix #1: Block sourceUid in Monkey-Patch

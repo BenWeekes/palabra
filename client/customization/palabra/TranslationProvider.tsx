@@ -239,6 +239,7 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
   // }, [channel]);
 
   const availableLanguages: Language[] = [
+    {code: 'en', name: 'English', flag: '🇬🇧'},
     {code: 'es', name: 'Spanish', flag: '🇪🇸'},
     {code: 'fr', name: 'French', flag: '🇫🇷'},
     {code: 'de', name: 'German', flag: '🇩🇪'},
@@ -334,13 +335,26 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
       if (!client) return;
 
       try {
-        const remoteUsers = rtcClient.remoteUsers || [];
+        const remoteUsers = client.remoteUsers || [];
         const user = remoteUsers.find((u: any) => u.uid.toString() === uid);
 
-        if (user && user.hasAudio && user.audioTrack) {
-          await client.subscribe(user, 'audio');
-          user.audioTrack.play();
+        console.log('[Palabra] subscribeToUser - UID:', uid, 'User found:', !!user, 'hasAudio:', user?.hasAudio);
+
+        if (user && user.hasAudio) {
+          // Use original subscribe (not monkey-patched version)
+          const originalSubscribe = originalSubscribeRef.current;
+          await originalSubscribe(user, 'audio');
+
+          // After subscribe, audioTrack should be available
+          if (user.audioTrack) {
+            user.audioTrack.play();
+            console.log('[Palabra] ✓ Subscribed and playing audio for UID', uid);
+          } else {
+            console.log('[Palabra] ⚠️ Subscribed but no audioTrack yet for UID', uid);
+          }
           subscribedUsers.current.add(uid);
+        } else {
+          console.log('[Palabra] ⚠️ Cannot subscribe - user not found or no audio for UID', uid);
         }
       } catch (error) {
         console.error(`[Palabra] Error subscribing to ${uid}:`, error);
@@ -596,6 +610,18 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
         // Unsubscribe from translation stream
         await unsubscribeFromUser(translation.translationUid);
 
+        // CRITICAL: Remove from active translations FIRST
+        // Otherwise monkey-patch will block re-subscription to sourceUid
+        setActiveTranslations(prev => {
+          const newMap = new Map(prev);
+          newMap.delete(sourceUid);
+          return newMap;
+        });
+
+        // Also update ref synchronously so monkey-patch sees it immediately
+        activeTranslationsRef.current.delete(sourceUid);
+        console.log('[Palabra] 🔓 Removed sourceUid from Map (size now:', activeTranslationsRef.current.size, ')');
+
         // Re-subscribe to original audio AND video
         const client = (rtcClient as any).client;
         if (client) {
@@ -605,6 +631,7 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
           if (sourceUser) {
             // Re-subscribe to audio
             if (sourceUser.hasAudio) {
+              console.log('[Palabra] 🔊 Re-subscribing to original audio for UID', sourceUid);
               await subscribeToUser(sourceUid);
             }
 
@@ -614,8 +641,8 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
                 const originalSubscribe = originalSubscribeRef.current;
                 await originalSubscribe(sourceUser, 'video');
                 if (sourceUser.videoTrack) {
-                  // Play video in the user's tile
-                  sourceUser.videoTrack.play(sourceUid);
+                  // Play video in the user's tile with fit mode (not fill)
+                  sourceUser.videoTrack.play(sourceUid, {fit: 'contain'});
                   console.log('[Palabra] ✓ Re-subscribed to original video for UID', sourceUid);
                 }
               } catch (error) {
@@ -624,13 +651,6 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
             }
           }
         }
-
-        // Remove from active translations
-        setActiveTranslations(prev => {
-          const newMap = new Map(prev);
-          newMap.delete(sourceUid);
-          return newMap;
-        });
       } catch (error) {
         console.error('[Palabra] Error stopping translation:', error);
       }

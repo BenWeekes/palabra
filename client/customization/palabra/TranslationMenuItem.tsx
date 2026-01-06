@@ -54,7 +54,7 @@ export const TranslationMenuItem: React.FC<TranslationMenuItemProps> = ({
     try {
       await startTranslation(
         uidString,
-        'en', // TODO: Make source language configurable or auto-detect
+        'auto', // Palabra auto-detects source language
         languageCode,
       );
     } catch (error) {
@@ -73,7 +73,7 @@ export const TranslationMenuItem: React.FC<TranslationMenuItemProps> = ({
         onPress={handleTranslationClick}
       />
 
-      {/* Language Selection Modal */}
+      {/* Compact Language Dropdown */}
       <Modal
         visible={showLanguageModal}
         transparent={true}
@@ -89,37 +89,20 @@ export const TranslationMenuItem: React.FC<TranslationMenuItemProps> = ({
             setShowLanguageModal(false);
             closeActionMenu();
           }}>
-          <TouchableOpacity
-            activeOpacity={1}
-            onPress={e => e.stopPropagation()}>
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>
-                  Select Translation Language
-                </Text>
+          <View style={styles.dropdownContainer}>
+            <Text style={styles.dropdownTitle}>Translate to:</Text>
+            <View style={styles.languageGrid}>
+              {availableLanguages.map(lang => (
                 <TouchableOpacity
-                  onPress={() => {
-                    setShowLanguageModal(false);
-                    closeActionMenu();
-                  }}
-                  style={styles.closeButton}>
-                  <Text style={styles.closeButtonText}>✕</Text>
+                  key={lang.code}
+                  style={styles.languageOption}
+                  onPress={() => handleLanguageSelect(lang.code)}>
+                  <Text style={styles.languageFlag}>{lang.flag}</Text>
+                  <Text style={styles.languageName}>{lang.name}</Text>
                 </TouchableOpacity>
-              </View>
-
-              <View style={styles.languageList}>
-                {availableLanguages.map(lang => (
-                  <TouchableOpacity
-                    key={lang.code}
-                    style={styles.languageOption}
-                    onPress={() => handleLanguageSelect(lang.code)}>
-                    <Text style={styles.languageFlag}>{lang.flag}</Text>
-                    <Text style={styles.languageName}>{lang.name}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
+              ))}
             </View>
-          </TouchableOpacity>
+          </View>
         </TouchableOpacity>
       </Modal>
     </>
@@ -133,59 +116,49 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  modalContent: {
+  dropdownContainer: {
     backgroundColor: $config.CARD_LAYER_4_COLOR,
     borderRadius: 8,
-    padding: 24,
-    minWidth: 320,
-    maxWidth: 400,
-    maxHeight: '80%',
+    padding: 16,
+    width: 340,
     shadowColor: '#000',
     shadowOffset: {width: 0, height: 4},
     shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 8,
   },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  modalTitle: {
-    fontSize: ThemeConfig.FontSize.large,
+  dropdownTitle: {
+    fontSize: ThemeConfig.FontSize.normal,
     fontWeight: '600',
     color: $config.FONT_COLOR,
     fontFamily: ThemeConfig.FontFamily.sansPro,
+    marginBottom: 12,
   },
-  closeButton: {
-    padding: 4,
-  },
-  closeButtonText: {
-    fontSize: 24,
-    color: $config.SECONDARY_ACTION_COLOR,
-    fontWeight: '300',
-  },
-  languageList: {
-    gap: 10,
+  languageGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
   },
   languageOption: {
-    flexDirection: 'row',
+    flexDirection: 'column',
     alignItems: 'center',
-    padding: 14,
-    borderRadius: 8,
+    padding: 8,
+    borderRadius: 6,
     backgroundColor: $config.CARD_LAYER_3_COLOR,
     borderWidth: 1,
     borderColor: $config.CARD_LAYER_5_COLOR,
+    width: 96,
+    marginRight: 6,
+    marginBottom: 6,
   },
   languageName: {
-    fontSize: ThemeConfig.FontSize.normal,
+    fontSize: ThemeConfig.FontSize.small,
     color: $config.FONT_COLOR,
     fontWeight: '500',
     fontFamily: ThemeConfig.FontFamily.sansPro,
+    textAlign: 'center',
   },
   languageFlag: {
-    fontSize: 28,
-    marginRight: 12,
+    fontSize: 32,
+    marginBottom: 4,
   },
 });

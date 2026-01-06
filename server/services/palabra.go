@@ -225,7 +225,16 @@ func (s *ServiceRouter) PalabraStart(w http.ResponseWriter, r *http.Request) {
 			LocalUID:       fmt.Sprintf("%d", uid),
 			Token:          token,
 			TargetLanguage: lang,
-			Options:        make(map[string]interface{}),
+			Options: map[string]interface{}{
+				"speech_generation": map[string]interface{}{
+					"voice_cloning": true,
+					"voice_timbre_detection": map[string]interface{}{
+						"enabled":            true,
+						"high_timbre_voices": []string{"default_high"},
+						"low_timbre_voices":  []string{"default_low"},
+					},
+				},
+			},
 		}
 
 		streams[i] = PalabraStreamInfo{
