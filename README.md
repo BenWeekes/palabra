@@ -109,10 +109,12 @@ cd /opt/palabra/client
 sudo nano customization/config.json
 ```
 
-**Update config.json:**
+**Update config.json (same-origin setup):**
 ```json
 {
-  "PALABRA_BACKEND_ENDPOINT": "https://yourdomain.com/api"
+  "FRONTEND_ENDPOINT": "https://yourdomain.com:7000",
+  "BACKEND_ENDPOINT": "https://yourdomain.com:7000",
+  "PALABRA_BACKEND_ENDPOINT": "https://yourdomain.com:7000"
 }
 ```
 
@@ -133,61 +135,83 @@ sudo chown -R www-data:www-data /var/www/palabra
 sudo nano /etc/nginx/sites-available/palabra
 ```
 
-**Nginx configuration:**
+**Nginx configuration (Same-Origin Setup - Recommended):**
+
+This configuration serves both frontend and API from the same origin (port 7000), eliminating CORS issues:
+
 ```nginx
-# Redirect HTTP to HTTPS
+# Palabra Frontend + Backend API - Port 7000 (same-origin)
 server {
-    listen 80;
-    server_name yourdomain.com;
-    return 301 https://$server_name$request_uri;
-}
-
-# HTTPS server
-server {
-    listen 443 ssl http2;
-    server_name yourdomain.com;
-
-    # SSL certificates (Let's Encrypt - configured in step 5)
+    listen [::]:7000 ssl ipv6only=on;
+    listen 7000 ssl;
     ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
-    # SSL settings
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-    ssl_prefer_server_ciphers on;
-
-    # Frontend - serve React build
-    location / {
-        root /var/www/palabra;
-        try_files $uri $uri/ /index.html;
-
-        # Security headers
-        add_header X-Frame-Options "SAMEORIGIN" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header X-XSS-Protection "1; mode=block" always;
-    }
-
-    # Backend API - proxy to Docker
-    location /api/ {
-        proxy_pass http://localhost:7080/;
+    # API requests - proxy to backend (same-origin, no CORS)
+    location /v1/ {
+        proxy_pass http://localhost:7081/v1/;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
-
-        # Timeout settings for long-running requests
         proxy_read_timeout 300s;
         proxy_connect_timeout 75s;
     }
 
-    # Client logs size limit
+    # Static files - serve frontend build
+    location / {
+        root /var/www/palabra;
+        index index.html;
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Cache static assets
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|wasm|mp4|ttf)$ {
+        root /var/www/palabra;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    client_max_body_size 10M;
+}
+
+# Backend direct access - Port 7080 (optional, for debugging)
+server {
+    listen [::]:7080 ssl ipv6only=on;
+    listen 7080 ssl;
+    ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    location / {
+        proxy_pass http://localhost:7081;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # WebSocket support
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 75s;
+    }
+
     client_max_body_size 10M;
 }
 ```
+
+**Key Points:**
+- Port 7000: Frontend + API (same-origin, no CORS)
+- Port 7080: Direct backend access (for debugging/testing)
+- Port 7081: Backend Docker container (internal)
+- All API requests use `/v1/` prefix and are proxied to backend
 
 **Enable site:**
 ```bash
@@ -237,17 +261,18 @@ sudo systemctl status docker
 ### 8. Verify Deployment
 
 ```bash
-# Check backend is running
-curl http://localhost:7080/health  # Should return 200 OK
+# Check backend is running (internal port)
+curl http://localhost:7081/health  # Should return 200 OK
 
 # Check frontend files
 ls -la /var/www/palabra
 
-# Check Nginx is serving
-curl -I http://yourdomain.com  # Should redirect to HTTPS
+# Check combined frontend + API (same-origin)
+curl -k https://localhost:7000/           # Frontend - should return HTML
+curl -k https://localhost:7000/v1/health  # API via proxy - should return OK
 
-# Check SSL
-curl -I https://yourdomain.com  # Should return 200 OK
+# Check direct backend access (optional debug port)
+curl -k https://localhost:7080/health     # Should return OK
 
 # Monitor logs
 sudo docker compose logs -f  # Backend logs
@@ -396,11 +421,15 @@ APP_CERTIFICATE=your_certificate
 ### Frontend (config.json)
 ```json
 {
-  "PALABRA_BACKEND_ENDPOINT": "http://localhost:7080"
+  "FRONTEND_ENDPOINT": "https://yourdomain.com:7000",
+  "BACKEND_ENDPOINT": "https://yourdomain.com:7000",
+  "PALABRA_BACKEND_ENDPOINT": "https://yourdomain.com:7000"
 }
 ```
 
-**Port Note**: Development backend runs on port **7080** (not 8080/8081) to avoid conflicts with other services. For production with Nginx, use your domain URL.
+**Same-Origin API Routing**: In production, all endpoints use the same origin (port 7000). Nginx proxies `/v1/*` requests to the backend (port 7081), eliminating CORS issues.
+
+**Port Note**: Development backend runs on port **7080** (not 8080/8081) to avoid conflicts with other services. For production with Nginx, use port 7000 for everything.
 
 ## Testing
 
