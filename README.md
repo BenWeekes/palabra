@@ -296,6 +296,28 @@ sudo nginx -s reload
 
 **Important**: Server must be x86-64 architecture (not ARM) due to Agora SDK binary requirements.
 
+### Agora SDK Requirements (Avatar Mode)
+
+For avatar mode (`ENABLE_ANAM=true`), the backend requires Agora RTC Server SDK native libraries:
+
+**What's included in the repository:**
+- `server/agora_sdk/` - Complete SDK with headers and libraries (243MB)
+  - Headers: `include/c/api2/` and `include/c/base/`
+  - Libraries: `libagora_rtc_sdk.so` and extension libraries
+  - Platform: Linux x86-64 only
+
+**Build requirements:**
+- Docker with CGO enabled (configured in Dockerfile)
+- Build platform must be `linux/amd64`
+
+**The Dockerfile handles:**
+- Setting CGO compiler flags to find SDK headers
+- Linking against `libagora_rtc_sdk.so`
+- Copying `.so` libraries to runtime container
+- Setting `LD_LIBRARY_PATH` for runtime
+
+**No manual SDK installation needed** - everything is included in the repo and handled by Docker.
+
 ## Two Operating Modes
 
 ### Audio-Only Mode (ENABLE_ANAM=false)
