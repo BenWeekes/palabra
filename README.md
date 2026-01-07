@@ -301,20 +301,30 @@ sudo nginx -s reload
 For avatar mode (`ENABLE_ANAM=true`), the backend requires Agora RTC Server SDK native libraries:
 
 **What's included in the repository:**
-- `server/agora_sdk/` - Complete SDK with headers and libraries (243MB)
+- `server/vendor_sdk/` - Go SDK wrapper (253MB)
+  - `go_sdk/rtc/` - Go bindings for Agora RTC
+  - `agora_sdk/` - Native SDK v4.4.32 (headers + libraries)
+  - Used by `go.mod` replace directive
+
+- `server/agora_sdk/` - Native SDK with macOS binaries (243MB)
   - Headers: `include/c/api2/` and `include/c/base/`
-  - Libraries: `libagora_rtc_sdk.so` and extension libraries
-  - Platform: Linux x86-64 only
+  - Libraries: `libagora_rtc_sdk.so` (Linux) and `.dylib` (macOS)
+  - Platform: Linux x86-64 for production, macOS for local dev
+
+**Why two SDK directories?**
+- `vendor_sdk` = Go SDK module (imports native SDK internally)
+- `agora_sdk` = Native SDK used by CGO during build and at runtime
 
 **Build requirements:**
 - Docker with CGO enabled (configured in Dockerfile)
 - Build platform must be `linux/amd64`
 
 **The Dockerfile handles:**
-- Setting CGO compiler flags to find SDK headers
-- Linking against `libagora_rtc_sdk.so`
-- Copying `.so` libraries to runtime container
-- Setting `LD_LIBRARY_PATH` for runtime
+1. Copy `vendor_sdk/` for Go module resolution
+2. Copy `agora_sdk/` for CGO compilation (headers) and runtime (libraries)
+3. Set CGO flags to find headers and link libraries
+4. Copy `.so` files to runtime container
+5. Set `LD_LIBRARY_PATH` for runtime
 
 **No manual SDK installation needed** - everything is included in the repo and handled by Docker.
 
