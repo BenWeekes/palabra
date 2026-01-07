@@ -47,7 +47,7 @@ go build -o bin/server ./cmd/video_conferencing
 ./bin/server
 ```
 
-**Backend runs at**: `http://localhost:8081`
+**Backend runs at**: `http://localhost:7080` (maps to container port 8080)
 
 ### Frontend
 
@@ -104,11 +104,13 @@ ALLOWED_ORIGIN=http://localhost:9000
   "APP_CERTIFICATE": "1508f5aab7e14f5e91e26e1921084563",
   "CUSTOMER_ID": "40b25d211955491580720cb54099c3c4",
   "CUSTOMER_CERTIFICATE": "555d0c42035c450a9b562ec20773d6b4",
-  "PALABRA_BACKEND_ENDPOINT": "http://localhost:8081",
+  "PALABRA_BACKEND_ENDPOINT": "http://localhost:7080",
   "ENABLE_STT": true,
   "ENABLE_CAPTION": true
 }
 ```
+
+**Port Configuration Note**: Backend uses port **7080** externally (via docker-compose.yml port mapping `7080:8080`). The internal container still runs on port 8080, but you access it from the host machine on port 7080. This avoids conflicts with other services that may be using port 8080/8081.
 
 **Note**: APP_ID must match backend `.env`. CUSTOMER_* fields exist but are unused (v007 token architecture).
 

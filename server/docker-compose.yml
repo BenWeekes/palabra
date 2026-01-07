@@ -26,8 +26,14 @@ services:
             - RUN_MIGRATION=true
             - DATABASE_URL=postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@database:5432/$POSTGRES_DB?sslmode=disable
             - PORT=8080
+            - ENABLE_ANAM=$ENABLE_ANAM
+            - ANAM_API_KEY=$ANAM_API_KEY
+            - ANAM_BASE_URL=$ANAM_BASE_URL
+            - ANAM_AVATAR_ID=$ANAM_AVATAR_ID
+            - ANAM_QUALITY=$ANAM_QUALITY
+            - ANAM_VIDEO_ENCODING=$ANAM_VIDEO_ENCODING
         ports:
-            - "8081:8080"
+            - "7080:8080"
 
     database:
         container_name: server_database

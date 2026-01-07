@@ -8,7 +8,7 @@ Real-time speech translation with optional lip-synced avatar for Agora video con
 ```bash
 cd server
 docker compose up --build
-# Runs at http://localhost:8080
+# Runs at http://localhost:7080 (external) → 8080 (container internal)
 ```
 
 ### Frontend
@@ -169,7 +169,7 @@ server {
 
     # Backend API - proxy to Docker
     location /api/ {
-        proxy_pass http://localhost:8080/;
+        proxy_pass http://localhost:7080/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
@@ -238,7 +238,7 @@ sudo systemctl status docker
 
 ```bash
 # Check backend is running
-curl http://localhost:8080/health  # Should return 200 OK
+curl http://localhost:7080/health  # Should return 200 OK
 
 # Check frontend files
 ls -la /var/www/palabra
@@ -364,9 +364,11 @@ APP_CERTIFICATE=your_certificate
 ### Frontend (config.json)
 ```json
 {
-  "PALABRA_BACKEND_ENDPOINT": "http://localhost:8081"
+  "PALABRA_BACKEND_ENDPOINT": "http://localhost:7080"
 }
 ```
+
+**Port Note**: Development backend runs on port **7080** (not 8080/8081) to avoid conflicts with other services. For production with Nginx, use your domain URL.
 
 ## Testing
 
