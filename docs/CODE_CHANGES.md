@@ -102,9 +102,41 @@ try {
 **config.json**:
 ```json
 {
-  "PALABRA_BACKEND_ENDPOINT": "http://localhost:8081"
+  "PALABRA_BACKEND_ENDPOINT": "http://localhost:7080"
 }
 ```
+
+**src/pages/video-call/VideoComponent.tsx** (CORE FILE - must edit):
+
+**Lines 27-32 - Filter translation UIDs from rendering**:
+```typescript
+// PALABRA FIX: Filter out translation UIDs (3000-4999) from rendering
+// These UIDs are used for translation streams and should not appear as tiles
+const filteredActiveUids = activeUids.filter((uid) => {
+  const uidNum = typeof uid === 'string' ? parseInt(uid, 10) : uid;
+  return uidNum < 3000 || uidNum >= 5000;
+});
+```
+
+**What it does:**
+- Prevents empty tiles from appearing for translation UIDs (3000-4999)
+- Translation UIDs still join the channel (required for audio/video streams)
+- Monkey-patch blocks subscription, this filter blocks rendering
+- Uses `filteredActiveUids` instead of `activeUids` in all layout renders
+
+**Why needed:**
+- Agora SDK triggers `user-joined` event for all UIDs
+- App Builder creates tiles for all joined users
+- Monkey-patch only blocks subscription, not tile creation
+- Result without filter: Empty black tile appears for UID 3000/4000
+
+**Lines changed:**
+- Line 114: `<CurrentLayout renderData={filteredActiveUids} />`
+- Line 115: `{((!$config.EVENT_MODE && filteredActiveUids.length === 1) ||`
+- Line 130: `return <CurrentLayout renderData={filteredActiveUids} />;`
+- Line 68: `if (filteredActiveUids && filteredActiveUids.length === 1 && !isCustomLayoutUsed) {`
+- Line 77: `}, [filteredActiveUids, isCustomLayoutUsed]);`
+- Line 96: `if (filteredActiveUids.length == 1) return true;`
 
 ## Key Architectural Decisions
 
