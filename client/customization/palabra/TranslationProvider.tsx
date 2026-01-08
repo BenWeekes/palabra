@@ -403,8 +403,8 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
 
         console.log('[Palabra] 🔒 Pre-blocked sourceUid in Map (size now:', activeTranslationsRef.current.size, ')');
 
-        // Unsubscribe from original audio AFTER blocking
-        await unsubscribeFromUser(sourceUid);
+        // NOTE: Do NOT unsubscribe from original audio here
+        // We wait until translation audio actually publishes to avoid audio gap
 
         // Call Backend
         const backendUrl = $config.PALABRA_BACKEND_ENDPOINT || $config.BACKEND_ENDPOINT;
@@ -530,6 +530,10 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
 
                 if (existingUser.audioTrack) {
                   try {
+                    // NOW unsubscribe from original audio (translation audio is ready)
+                    console.log('[Palabra] 🔇 Unsubscribing from original audio for UID', sourceUid);
+                    await unsubscribeFromUser(sourceUid);
+
                     existingUser.audioTrack.play();
                     console.log('[Palabra] ✓ Playing translation audio from UID', translationStream.uid);
                   } catch (err: any) {
@@ -718,6 +722,10 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
               await originalSubscribe(user, 'audio');
               if (user.audioTrack) {
                 try {
+                  // NOW unsubscribe from original audio (translation audio is ready)
+                  console.log('[Palabra] 🔇 Unsubscribing from original audio for UID', translation.sourceUid);
+                  await unsubscribeFromUser(translation.sourceUid);
+
                   user.audioTrack.play();
                   console.log('[Palabra] ✓ Playing Anam avatar audio from UID', uidString);
                 } catch (err: any) {
@@ -729,6 +737,10 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
               await originalSubscribe(user, 'audio');
               if (user.audioTrack) {
                 try {
+                  // NOW unsubscribe from original audio (translation audio is ready)
+                  console.log('[Palabra] 🔇 Unsubscribing from original audio for UID', translation.sourceUid);
+                  await unsubscribeFromUser(translation.sourceUid);
+
                   user.audioTrack.play();
                   console.log('[Palabra] ✓ Playing Palabra translation audio (audio-only mode) from UID', uidString);
                 } catch (err: any) {
@@ -780,7 +792,7 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
     return () => {
       (rtcClient as any).client.off('user-published', handleUserPublished);
     };
-  }, [rtcClient, isTranslationUid, isAnamUid, isPalabraUid]);
+  }, [rtcClient, isTranslationUid, isAnamUid, isPalabraUid, unsubscribeFromUser]);
 
   // NOTE: No continuous subscription needed - we listen directly to Agora SDK's user-published event above
 
