@@ -84,6 +84,10 @@ DATABASE_URL=postgresql://appbuilder:strong_password_here@postgres:5432/appbuild
 # Translation mode
 ENABLE_ANAM=false  # Set true for avatar mode
 
+# Session protection (prevents runaway credit usage)
+PALABRA_SESSION_TIMEOUT_MINUTES=10  # Max session duration
+PALABRA_IDLE_TIMEOUT_SECONDS=60     # Stop after silence
+
 # Anam credentials (only if ENABLE_ANAM=true)
 ANAM_API_KEY=your_base64_key
 ANAM_BASE_URL=https://api.anam.ai/v1
@@ -375,8 +379,6 @@ For avatar mode (`ENABLE_ANAM=true`), the backend requires Agora RTC Server SDK 
 
 📖 **[anam-integrate.md](docs/anam-integrate.md)** - Anam avatar integration (WebSocket, bot)
 
-📖 **[CODE_CHANGES.md](docs/CODE_CHANGES.md)** - Git commit reference, file changes
-
 ## Architecture
 
 ### UID Ranges
@@ -397,6 +399,11 @@ For avatar mode (`ENABLE_ANAM=true`), the backend requires Agora RTC Server SDK 
 ✅ **Video replacement** - Avatar plays in source user's tile (seamless UX)
 
 ✅ **Late-arrival handling** - Handles race conditions (UID publishes before API response)
+
+✅ **Session protection** - Three-layer safeguard against runaway sessions:
+  - Session timeout (default 10 min) - max duration
+  - Idle detection (default 60s) - stops if no audio activity
+  - Target-left detection - stops immediately if Palabra bot leaves channel
 
 ## Configuration
 
