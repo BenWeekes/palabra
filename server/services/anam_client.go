@@ -24,6 +24,8 @@ type AnamClient struct {
 	channel       string
 	anamUID       string
 	token         string
+	baseURL       string
+	apiKey        string
 	sessionToken  string
 	sessionID     string
 	wsAddress     string
@@ -67,13 +69,17 @@ type AnamSessionResponse struct {
 }
 
 // NewAnamClient creates a new Anam client
-func NewAnamClient(avatarID, appID, channel, anamUID, token string) *AnamClient {
+// baseURL and apiKey can be empty strings to use viper config (parent process)
+// or provided directly (child process)
+func NewAnamClient(avatarID, appID, channel, anamUID, token, baseURL, apiKey string) *AnamClient {
 	return &AnamClient{
 		avatarID:    avatarID,
 		appID:       appID,
 		channel:     channel,
 		anamUID:     anamUID,
 		token:       token,
+		baseURL:     baseURL,
+		apiKey:      apiKey,
 		isConnected: false,
 		stopChan:    make(chan struct{}),
 	}
@@ -94,8 +100,15 @@ func (c *AnamClient) StartSession() error {
 		return fmt.Errorf("already connected")
 	}
 
-	baseURL := viper.GetString("ANAM_BASE_URL")
-	apiKey := viper.GetString("ANAM_API_KEY")
+	// Use struct fields if provided, otherwise fall back to viper config
+	baseURL := c.baseURL
+	apiKey := c.apiKey
+	if baseURL == "" {
+		baseURL = viper.GetString("ANAM_BASE_URL")
+	}
+	if apiKey == "" {
+		apiKey = viper.GetString("ANAM_API_KEY")
+	}
 
 	if baseURL == "" || apiKey == "" {
 		return fmt.Errorf("ANAM_BASE_URL or ANAM_API_KEY not configured")
@@ -377,6 +390,12 @@ func (c *AnamClient) SendVoiceEnd() error {
 
 // receiveLoop continuously receives messages from Anam
 func (c *AnamClient) receiveLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[Anam] Recovered from panic in receiveLoop: %v\n", r)
+		}
+	}()
+
 	fmt.Printf("[Anam] Starting receive loop\n")
 
 	for {
@@ -414,6 +433,12 @@ func (c *AnamClient) receiveLoop() {
 
 // sendHeartbeat sends periodic heartbeat to keep WebSocket connection alive
 func (c *AnamClient) sendHeartbeat() {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[Anam] Recovered from panic in sendHeartbeat: %v\n", r)
+		}
+	}()
+
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 

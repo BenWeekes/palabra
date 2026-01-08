@@ -1,0 +1,95 @@
+// FlatBuffers schema for Parent <-> Child IPC communication
+// Used by Palabra backend to isolate Agora SDK in child process
+
+namespace botipc;
+
+// Message types for bidirectional communication
+enum MessageType : byte {
+  // Parent -> Child commands
+  START_SESSION = 0,
+  STOP_SESSION = 1,
+
+  // Child -> Parent responses
+  STATUS_UPDATE = 10,
+  LOG_MESSAGE = 11,
+  ERROR_RESPONSE = 12
+}
+
+// Session lifecycle states
+enum SessionStatus : byte {
+  INITIALIZING = 0,
+  CONNECTING_ANAM = 1,
+  CONNECTING_AGORA = 2,
+  CONNECTED = 3,
+  STREAMING = 4,
+  DISCONNECTING = 5,
+  DISCONNECTED = 6,
+  FAILED = 7
+}
+
+// Log levels for child process logging
+enum LogLevel : byte {
+  DEBUG = 0,
+  INFO = 1,
+  WARN = 2,
+  ERROR = 3
+}
+
+// Parent -> Child: Start a new translation session
+table StartSessionPayload {
+  task_id: string;
+
+  // Agora configuration
+  app_id: string;
+  channel: string;
+  bot_uid: uint32;
+  bot_token: string;
+  palabra_uid: uint32;      // UID 3000+ to subscribe to
+
+  // Anam configuration
+  anam_api_key: string;
+  anam_base_url: string;
+  anam_avatar_id: string;
+  anam_uid: uint32;         // UID 4000+ for avatar
+  anam_token: string;
+
+  // Translation settings
+  target_language: string;
+}
+
+// Parent -> Child: Stop the session
+table StopSessionPayload {
+  task_id: string;
+  reason: string;
+}
+
+// Child -> Parent: Status update
+table StatusPayload {
+  task_id: string;
+  status: SessionStatus;
+  message: string;
+  anam_uid: uint32;
+}
+
+// Child -> Parent: Log message
+table LogPayload {
+  task_id: string;
+  level: LogLevel;
+  message: string;
+}
+
+// Child -> Parent: Error occurred
+table ErrorPayload {
+  task_id: string;
+  error_code: string;
+  message: string;
+  fatal: bool;              // If true, session is terminated
+}
+
+// Main IPC message wrapper
+table IPCMessage {
+  message_type: MessageType;
+  payload: [ubyte];         // Serialized payload (one of the above tables)
+}
+
+root_type IPCMessage;

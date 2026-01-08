@@ -96,10 +96,6 @@ type TaskInfo struct {
 }
 
 var (
-	// Map to track active Anam clients by task ID
-	activeAnamClients = make(map[string]*AnamClient)
-	// Map to track active Agora bots by task ID
-	activeAgoraBots = make(map[string]*AgoraBot)
 	// Per-channel counters for Anam UIDs (channel -> next available UID)
 	channelAnamCounters = make(map[string]uint32)
 	// Task deduplication: map key is "channel:sourceUid:targetLanguage"
@@ -361,8 +357,8 @@ func (s *ServiceRouter) PalabraStart(w http.ResponseWriter, r *http.Request) {
 				anamUID := fmt.Sprintf("%d", anamUIDNum)
 
 				// Generate Bot UID (for our audio forwarder - should NOT be visible to users)
-				// Bot UID = 5000+ to avoid collision with Anam UID (4000+)
-				botUIDNum := uint32(5000 + i)
+				// Bot UID = 4500+ (within 3000-4999 range so frontend filters it out)
+				botUIDNum := uint32(4500 + i)
 				botUID := fmt.Sprintf("%d", botUIDNum)
 
 				s.Logger.Info().
@@ -403,45 +399,54 @@ func (s *ServiceRouter) PalabraStart(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 
-				// Create Anam client with Agora parameters
-				anamClient := NewAnamClient(avatarID, appID, req.Channel, anamUID, anamToken)
+				// Use BotProcessManager to spawn isolated child process
+				// This prevents Agora SDK crashes from bringing down the HTTP server
+				botManager := GetBotProcessManager()
 
-				// Connect to Anam WebSocket
-				err = anamClient.StartSession()
-				if err != nil {
-					s.Logger.Error().Err(err).Msg("Failed to start Anam session")
-					continue
+				// Get Anam configuration
+				anamAPIKey := viper.GetString("ANAM_API_KEY")
+				anamBaseURL := viper.GetString("ANAM_BASE_URL")
+				if anamBaseURL == "" {
+					anamBaseURL = "https://api.anam.ai"
 				}
 
-				// Store Anam client for cleanup
-				activeAnamClients[taskID] = anamClient
+				// Parse UIDs to uint32
+				var palabraUIDNum uint32
+				fmt.Sscanf(palabraUID, "%d", &palabraUIDNum)
 
-				// Create Agora bot that subscribes to Palabra and forwards to Anam
-				// Bot uses its OWN UID (5000+), NOT the Anam UID (4000+)
+				config := StartSessionConfig{
+					TaskID:         fmt.Sprintf("%s-%d", taskID, i),
+					AppID:          appID,
+					Channel:        req.Channel,
+					BotUID:         botUIDNum,
+					BotToken:       botToken,
+					PalabraUID:     palabraUIDNum,
+					AnamAPIKey:     anamAPIKey,
+					AnamBaseURL:    anamBaseURL,
+					AnamAvatarID:   avatarID,
+					AnamUID:        anamUIDNum,
+					AnamToken:      anamToken,
+					TargetLanguage: stream.Language,
+				}
+
 				s.Logger.Info().
 					Str("palabraUID", palabraUID).
 					Str("anamUID", anamUID).
 					Str("botUID", botUID).
-					Msg("DEBUG: About to create Agora bot")
+					Msg("Starting bot process for Anam avatar")
 
-				bot := NewAgoraBot(appID, req.Channel, botUID, botToken, palabraUID, anamClient)
-
-				// Start bot (joins channel, subscribes to Palabra UID, forwards PCM to Anam)
-				err = bot.Start()
+				proc, err := botManager.StartSession(config)
 				if err != nil {
-					s.Logger.Error().Err(err).Str("anamUID", anamUID).Msg("Failed to start Agora bot")
+					s.Logger.Error().Err(err).Str("anamUID", anamUID).Msg("Failed to start bot process")
 					continue
 				}
-
-				// Store bot for cleanup
-				botKey := fmt.Sprintf("%s-%d", taskID, i)
-				activeAgoraBots[botKey] = bot
 
 				s.Logger.Info().
 					Str("palabraUID", palabraUID).
 					Str("anamUID", anamUID).
 					Str("botUID", botUID).
-					Msg("Agora bot started - bot subscribes to Palabra, forwards to Anam, avatar publishes as anamUID")
+					Int("pid", proc.cmd.Process.Pid).
+					Msg("Bot process started - isolated process handles Agora bot and Anam client")
 			}
 		}
 	}
@@ -551,33 +556,24 @@ func (s *ServiceRouter) PalabraStop(w http.ResponseWriter, r *http.Request) {
 
 	s.Logger.Info().Str("taskId", req.TaskID).Msg("Translation task stopped successfully")
 
-	// Clean up Agora bots if they exist
-	for botKey := range activeAgoraBots {
-		if len(botKey) >= len(req.TaskID) && botKey[:len(req.TaskID)] == req.TaskID {
-			bot := activeAgoraBots[botKey]
-			s.Logger.Info().Str("taskId", req.TaskID).Str("botKey", botKey).Msg("Stopping Agora bot")
+	// Clean up bot processes if Anam is enabled
+	enableAnam := viper.GetBool("ENABLE_ANAM")
+	if enableAnam {
+		botManager := GetBotProcessManager()
 
-			// Stop bot (disconnects from channel, stops forwarding audio)
-			err := bot.Stop()
-			if err != nil {
-				s.Logger.Error().Err(err).Msg("Failed to stop Agora bot")
+		// Stop all sessions associated with this task ID
+		// Sessions are keyed as "taskID-index"
+		sessions := botManager.GetAllSessions()
+		for sessionID := range sessions {
+			if len(sessionID) >= len(req.TaskID) && sessionID[:len(req.TaskID)] == req.TaskID {
+				s.Logger.Info().Str("taskId", req.TaskID).Str("sessionId", sessionID).Msg("Stopping bot process")
+
+				err := botManager.StopSession(sessionID)
+				if err != nil {
+					s.Logger.Error().Err(err).Str("sessionId", sessionID).Msg("Failed to stop bot process")
+				}
 			}
-
-			delete(activeAgoraBots, botKey)
 		}
-	}
-
-	// Clean up Anam client if it exists
-	if anamClient, exists := activeAnamClients[req.TaskID]; exists {
-		s.Logger.Info().Str("taskId", req.TaskID).Msg("Stopping Anam client")
-
-		// Close Anam client (stops WebSocket connection)
-		err := anamClient.Close()
-		if err != nil {
-			s.Logger.Error().Err(err).Msg("Failed to close Anam client")
-		}
-
-		delete(activeAnamClients, req.TaskID)
 	}
 
 	// Clean up task deduplication map
@@ -607,4 +603,17 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	w.Write(response)
+}
+
+// PalabraTasks returns a list of active translation tasks
+func (s *ServiceRouter) PalabraTasks(w http.ResponseWriter, r *http.Request) {
+	tasks := make([]TaskInfo, 0)
+	for _, task := range activeTasksByKey {
+		tasks = append(tasks, *task)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"tasks":   tasks,
+	})
 }

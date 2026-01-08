@@ -19,6 +19,7 @@ type AgoraBot struct {
 	anamClient    *AnamClient
 	conn          *agoraservice.RtcConnection
 	stopChan      chan struct{}
+	targetLeftChan chan struct{} // Signals when target UID leaves channel
 	isConnected   bool
 	isSpeaking    bool   // Track if currently sending speech to Anam
 	silenceFrames int    // Count consecutive silent frames (for voice_end)
@@ -31,22 +32,27 @@ type AgoraBot struct {
 	rmsThreshold  int64    // RMS threshold for voice detection (default: 100)
 	speechFrames  int      // Count frames above threshold before triggering speech
 	sendingAudio  bool     // Currently sending audio to Anam
+
+	// Idle detection
+	lastAudioTime time.Time // Time when audio was last forwarded to Anam
 }
 
 // NewAgoraBot creates a new Agora bot that subscribes to audio and forwards to Anam
 func NewAgoraBot(appID, channel, botUID, token, targetUID string, anamClient *AnamClient) *AgoraBot {
 	return &AgoraBot{
-		appID:        appID,
-		channel:      channel,
-		botUID:       botUID,
-		token:        token,
-		targetUID:    targetUID,
-		anamClient:   anamClient,
-		stopChan:     make(chan struct{}),
-		isConnected:  false,
-		audioBuffer:  make([][]byte, 10), // 10 frames = ~100ms pre-roll
-		rmsThreshold: 100,                 // RMS threshold for voice detection
-		sendingAudio: false,
+		appID:          appID,
+		channel:        channel,
+		botUID:         botUID,
+		token:          token,
+		targetUID:      targetUID,
+		anamClient:     anamClient,
+		stopChan:       make(chan struct{}),
+		targetLeftChan: make(chan struct{}),
+		isConnected:    false,
+		audioBuffer:    make([][]byte, 10), // 10 frames = ~100ms pre-roll
+		rmsThreshold:   100,                // RMS threshold for voice detection
+		sendingAudio:   false,
+		lastAudioTime:  time.Now(), // Initialize to now
 	}
 }
 
@@ -130,7 +136,17 @@ func (b *AgoraBot) Start() error {
 			}
 		},
 		OnUserLeft: func(con *agoraservice.RtcConnection, uid string, reason int) {
-			fmt.Printf("[AgoraBot] User left: %s\n", uid)
+			fmt.Printf("[AgoraBot] User left: %s (reason: %d)\n", uid, reason)
+			// If our target UID (Palabra bot) leaves, signal to stop
+			if uid == b.targetUID {
+				fmt.Printf("[AgoraBot] ⚠️ Target UID %s left channel - signaling shutdown\n", uid)
+				select {
+				case <-b.targetLeftChan:
+					// Already closed
+				default:
+					close(b.targetLeftChan)
+				}
+			}
 		},
 	}
 
@@ -226,6 +242,9 @@ func (b *AgoraBot) Start() error {
 					if err != nil {
 						fmt.Printf("[AgoraBot] ❌ Error forwarding audio: %v\n", err)
 					}
+
+					// Update last audio time for idle detection
+					b.lastAudioTime = time.Now()
 
 					// Log every 100 frames (~1 second)
 					b.frameCount++
@@ -390,4 +409,14 @@ func upsample16to24(input []int16) []int16 {
 	}
 
 	return output
+}
+
+// GetIdleDuration returns how long since audio was last sent to Anam
+func (b *AgoraBot) GetIdleDuration() time.Duration {
+	return time.Since(b.lastAudioTime)
+}
+
+// TargetLeftChan returns a channel that closes when target UID leaves
+func (b *AgoraBot) TargetLeftChan() <-chan struct{} {
+	return b.targetLeftChan
 }

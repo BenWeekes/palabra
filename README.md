@@ -7,9 +7,19 @@ Real-time speech translation with optional lip-synced avatar for Agora video con
 ### Backend
 ```bash
 cd server
+
+# Copy and configure environment
+cp .env.example .env
+# Edit .env with your Agora/Palabra/Anam credentials
+
+# Build and run (builds both server and bot_worker binaries)
 docker compose up --build
-# Runs at http://localhost:7080 (external) → 8080 (container internal)
+# Runs at http://localhost:7081 (external) → 8080 (container internal)
 ```
+
+The Docker build creates two binaries:
+- `server` - Main HTTP server (parent process)
+- `bot_worker` - Agora SDK runner (child process, crash-isolated)
 
 ### Frontend
 ```bash
@@ -379,7 +389,39 @@ For avatar mode (`ENABLE_ANAM=true`), the backend requires Agora RTC Server SDK 
 
 📖 **[anam-integrate.md](docs/anam-integrate.md)** - Anam avatar integration (WebSocket, bot)
 
+📖 **[palabra-architecture.md](docs/palabra-architecture.md)** - Backend process architecture (crash isolation)
+
 ## Architecture
+
+### Backend Process Model
+
+The backend uses a **parent/child process architecture** for crash isolation:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    PARENT PROCESS (HTTP Server)              │
+│  - Handles API requests (/v1/palabra/start, /stop)          │
+│  - Spawns isolated child processes for each session         │
+│  - Survives child crashes (no 502 errors)                   │
+│                                                              │
+│  Built binary: /go/bin/server                               │
+└─────────────────────────────────────────────────────────────┘
+         │ stdin/stdout (FlatBuffers IPC)
+         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    CHILD PROCESS (bot_worker)                │
+│  - Runs Agora SDK (can crash with segfaults)                │
+│  - Connects to Anam WebSocket                               │
+│  - Forwards audio from Palabra to Anam                      │
+│  - Auto-stops on: timeout, idle, or target-left             │
+│                                                              │
+│  Built binary: /go/bin/bot_worker                           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Why this design?** The Agora Go SDK wraps native C code that can crash with segfaults. Go's `recover()` cannot catch these. By isolating the SDK in a child process, crashes only affect that session - the HTTP server stays up.
+
+See [palabra-architecture.md](docs/palabra-architecture.md) for full details.
 
 ### UID Ranges
 

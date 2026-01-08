@@ -10,18 +10,14 @@ WORKDIR /server
 # Copy vendored Agora SDK first (needed for go.mod replace directive)
 COPY vendor_sdk /server/vendor_sdk
 
-# Copy go.mod files
-COPY go.mod .
-COPY go.sum .
-
-# Get dependancies - will also be cached if we won't change mod/sum
-RUN go mod download
-
 # Copy Agora SDK headers and libraries (needed for CGO compilation)
 COPY agora_sdk /server/agora_sdk
 
-# COPY the source code as the last step
+# Copy all source code
 COPY . .
+
+# Update go.sum with all dependencies
+RUN go mod tidy
 
 # Build the binary with CGO enabled for Agora SDK
 # Set CGO flags to find Agora SDK headers and libraries
@@ -29,7 +25,11 @@ ENV CGO_CFLAGS="-I/server/agora_sdk/include/c/api2 -I/server/agora_sdk/include/c
 ENV CGO_LDFLAGS="-L/server/agora_sdk -lagora_rtc_sdk"
 
 # Build for x86-64 (Agora SDK is x86-64 only)
+# Build main HTTP server
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -a -o /go/bin/server /server/cmd/video_conferencing
+
+# Build bot_worker child process (runs Agora SDK in isolation)
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -a -o /go/bin/bot_worker /server/cmd/bot_worker
 
 # Second step to build image with required libraries
 FROM --platform=linux/amd64 ubuntu:22.04
@@ -39,8 +39,9 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy built binary
+# Copy built binaries
 COPY --from=build-env /go/bin/server /go/bin/server
+COPY --from=build-env /go/bin/bot_worker /go/bin/bot_worker
 COPY --from=build-env /server/config.json config.json
 COPY --from=build-env /server/migrations migrations
 
