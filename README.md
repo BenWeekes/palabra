@@ -476,6 +476,8 @@ See [palabra-architecture.md](docs/palabra-architecture.md) for full details.
 
 ✅ **Video replacement** - Avatar plays in source user's tile (seamless UX)
 
+✅ **16:9 aspect ratio fix** - Anam avatar (4:3) displayed in 16:9 container with `cover` fit to match other video tiles. See `playVideoIn16x9Container()` in TranslationProvider.tsx.
+
 ✅ **Late-arrival handling** - Handles race conditions (UID publishes before API response)
 
 ✅ **Session protection** - Three-layer safeguard against runaway sessions:

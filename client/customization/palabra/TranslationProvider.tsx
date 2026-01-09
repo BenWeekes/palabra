@@ -274,9 +274,8 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
   }, [isPalabraUid, isAnamUid]);
 
   /**
-   * Play video track filling the container
-   * Uses 'cover' fit mode to fill the entire tile while maintaining aspect ratio
-   * (crops excess from 4:3 video to fit 16:9 tile)
+   * Play video track in a 16:9 aspect ratio container
+   * Creates a 16:9 box and plays video with 'cover' to fill it completely
    */
   const playVideoIn16x9Container = useCallback((videoTrack: any, containerId: string) => {
     const container = document.getElementById(containerId);
@@ -285,9 +284,40 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
       return;
     }
 
-    // Play video directly in container with 'cover' to fill entire tile
-    videoTrack.play(containerId, {fit: 'cover'});
-    console.log('[Palabra] ✓ Video playing with cover fit for UID', containerId);
+    // Clear existing content
+    container.innerHTML = '';
+
+    // Create wrapper that fills container and centers the 16:9 box
+    const wrapper = document.createElement('div');
+    wrapper.style.width = '100%';
+    wrapper.style.height = '100%';
+    wrapper.style.display = 'flex';
+    wrapper.style.alignItems = 'center';
+    wrapper.style.justifyContent = 'center';
+    wrapper.style.backgroundColor = '#000';
+    wrapper.style.overflow = 'hidden';
+
+    // Create 16:9 aspect ratio container using padding trick
+    const aspectContainer = document.createElement('div');
+    aspectContainer.style.width = '100%';
+    aspectContainer.style.position = 'relative';
+    aspectContainer.style.paddingBottom = '56.25%'; // 16:9 = 9/16 = 0.5625
+
+    // Video element positioned absolutely within the aspect container
+    const videoElement = document.createElement('div');
+    videoElement.style.position = 'absolute';
+    videoElement.style.top = '0';
+    videoElement.style.left = '0';
+    videoElement.style.width = '100%';
+    videoElement.style.height = '100%';
+
+    aspectContainer.appendChild(videoElement);
+    wrapper.appendChild(aspectContainer);
+    container.appendChild(wrapper);
+
+    // Play video with cover to fill the 16:9 container completely
+    videoTrack.play(videoElement, {fit: 'cover'});
+    console.log('[Palabra] ✓ Video playing in 16:9 container for UID', containerId);
   }, []);
 
   /**
