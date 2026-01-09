@@ -2,6 +2,25 @@
 
 Real-time speech translation with optional lip-synced avatar for Agora video conferencing.
 
+## Repository Structure
+
+This repo contains **customization files** that overlay onto Agora App Builder:
+
+```
+palabra/                      # This repo (customizations + backend)
+├── client/                   # Frontend customization files (NOT buildable standalone)
+│   ├── customization/palabra/  # Translation UI components
+│   └── config.json            # Frontend config
+├── server/                   # Go backend (buildable with Docker)
+└── docs/                     # Documentation
+
+palabra-client-full/          # Separate: Full Agora App Builder (has package.json)
+├── template/                 # App Builder source
+│   ├── customization/palabra/  # ← Copy from palabra/client/customization/
+│   └── ...
+└── Builds/web/              # Build output → deploy to /var/www/palabra/
+```
+
 ## Quick Start (Development)
 
 ### Backend
@@ -22,9 +41,26 @@ The Docker build creates two binaries:
 - `bot_worker` - Agora SDK runner (child process, crash-isolated)
 
 ### Frontend
+
+The `client/` directory contains **customization files only**. To build the frontend:
+
 ```bash
-cd client
-npm install
+# 1. Copy customization files to App Builder
+cp -r palabra/client/customization/palabra/* palabra-client-full/template/customization/palabra/
+
+# 2. Build from App Builder directory
+cd palabra-client-full/template
+npm install      # First time only
+npm run web:build
+
+# 3. Deploy (production)
+sudo cp -r ../Builds/web/* /var/www/palabra/
+sudo chown -R www-data:www-data /var/www/palabra/
+```
+
+For development with hot reload:
+```bash
+cd palabra-client-full/template
 npm run web
 # Runs at http://localhost:9000
 ```
