@@ -274,6 +274,55 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
   }, [isPalabraUid, isAnamUid]);
 
   /**
+   * Play video track in a 16:9 aspect ratio container
+   * This ensures 4:3 video (like Anam avatar) displays correctly in 16:9 tiles
+   */
+  const playVideoIn16x9Container = useCallback((videoTrack: any, containerId: string) => {
+    const container = document.getElementById(containerId);
+    if (!container) {
+      console.log('[Palabra] ⚠️ Container not found for ID:', containerId);
+      return;
+    }
+
+    // Clear existing content
+    container.innerHTML = '';
+
+    // Create 16:9 wrapper
+    const wrapper = document.createElement('div');
+    wrapper.style.width = '100%';
+    wrapper.style.height = '100%';
+    wrapper.style.position = 'relative';
+    wrapper.style.overflow = 'hidden';
+    wrapper.style.display = 'flex';
+    wrapper.style.alignItems = 'center';
+    wrapper.style.justifyContent = 'center';
+    wrapper.style.backgroundColor = '#000';
+
+    // Create inner container for video with 16:9 aspect ratio
+    const videoContainer = document.createElement('div');
+    videoContainer.style.width = '100%';
+    videoContainer.style.height = '0';
+    videoContainer.style.paddingBottom = '56.25%'; // 16:9 aspect ratio
+    videoContainer.style.position = 'relative';
+
+    // Create the actual video element container
+    const videoElement = document.createElement('div');
+    videoElement.style.position = 'absolute';
+    videoElement.style.top = '0';
+    videoElement.style.left = '0';
+    videoElement.style.width = '100%';
+    videoElement.style.height = '100%';
+
+    videoContainer.appendChild(videoElement);
+    wrapper.appendChild(videoContainer);
+    container.appendChild(wrapper);
+
+    // Play video in the inner container
+    videoTrack.play(videoElement, {fit: 'contain'});
+    console.log('[Palabra] ✓ Video playing in 16:9 container for UID', containerId);
+  }, []);
+
+  /**
    * Unsubscribe from a user's audio
    */
   const unsubscribeFromUser = useCallback(
@@ -564,10 +613,8 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
                   }
 
                   // Play Anam avatar video in the source user's container div
-                  // Agora creates <div id="{uid}" class="video-container"> for each user
-                  // Pass the UID as container ID and Agora will replace the contents
-                  existingUser.videoTrack.play(sourceUid);
-                  console.log('[Palabra] ✓ Anam avatar video now playing in tile for UID', sourceUid);
+                  // Use 16:9 wrapper to ensure proper aspect ratio
+                  playVideoIn16x9Container(existingUser.videoTrack, sourceUid);
                 } else {
                   console.log('[Palabra] ⚠️ No video track on user object after subscribe for UID', translationStream.uid);
                   console.log('[Palabra] 🔍 User object keys:', Object.keys(existingUser));
@@ -587,7 +634,7 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
         throw error;
       }
     },
-    [channel, rtcClient, unsubscribeFromUser, subscribeToUser],
+    [channel, rtcClient, unsubscribeFromUser, subscribeToUser, playVideoIn16x9Container],
   );
 
   /**
@@ -645,8 +692,8 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
                 const originalSubscribe = originalSubscribeRef.current;
                 await originalSubscribe(sourceUser, 'video');
                 if (sourceUser.videoTrack) {
-                  // Play video in the user's tile with fit mode (not fill)
-                  sourceUser.videoTrack.play(sourceUid, {fit: 'contain'});
+                  // Play video in the user's tile with 16:9 container
+                  playVideoIn16x9Container(sourceUser.videoTrack, sourceUid);
                   console.log('[Palabra] ✓ Re-subscribed to original video for UID', sourceUid);
                 }
               } catch (error) {
@@ -659,7 +706,7 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
         console.error('[Palabra] Error stopping translation:', error);
       }
     },
-    [activeTranslations, unsubscribeFromUser, subscribeToUser],
+    [activeTranslations, unsubscribeFromUser, subscribeToUser, playVideoIn16x9Container],
   );
 
   /**
@@ -770,10 +817,8 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
                   }
 
                   // Play Anam avatar video in the source user's container div
-                  // Agora creates <div id="{uid}" class="video-container"> for each user
-                  // Pass the UID as container ID and Agora will replace the contents
-                  user.videoTrack.play(sourceUid);
-                  console.log('[Palabra] ✓ Anam avatar video now playing in tile for UID', sourceUid);
+                  // Use 16:9 wrapper to ensure proper aspect ratio
+                  playVideoIn16x9Container(user.videoTrack, sourceUid);
                 }
               }
             }
@@ -792,7 +837,7 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
     return () => {
       (rtcClient as any).client.off('user-published', handleUserPublished);
     };
-  }, [rtcClient, isTranslationUid, isAnamUid, isPalabraUid, unsubscribeFromUser]);
+  }, [rtcClient, isTranslationUid, isAnamUid, isPalabraUid, unsubscribeFromUser, playVideoIn16x9Container]);
 
   // NOTE: No continuous subscription needed - we listen directly to Agora SDK's user-published event above
 
