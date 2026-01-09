@@ -274,8 +274,9 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
   }, [isPalabraUid, isAnamUid]);
 
   /**
-   * Play video track in a 16:9 aspect ratio container
-   * This ensures 4:3 video (like Anam avatar) displays correctly in 16:9 tiles
+   * Play video track filling the container
+   * Uses 'cover' fit mode to fill the entire tile while maintaining aspect ratio
+   * (crops excess from 4:3 video to fit 16:9 tile)
    */
   const playVideoIn16x9Container = useCallback((videoTrack: any, containerId: string) => {
     const container = document.getElementById(containerId);
@@ -284,42 +285,9 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
       return;
     }
 
-    // Clear existing content
-    container.innerHTML = '';
-
-    // Create 16:9 wrapper
-    const wrapper = document.createElement('div');
-    wrapper.style.width = '100%';
-    wrapper.style.height = '100%';
-    wrapper.style.position = 'relative';
-    wrapper.style.overflow = 'hidden';
-    wrapper.style.display = 'flex';
-    wrapper.style.alignItems = 'center';
-    wrapper.style.justifyContent = 'center';
-    wrapper.style.backgroundColor = '#000';
-
-    // Create inner container for video with 16:9 aspect ratio
-    const videoContainer = document.createElement('div');
-    videoContainer.style.width = '100%';
-    videoContainer.style.height = '0';
-    videoContainer.style.paddingBottom = '56.25%'; // 16:9 aspect ratio
-    videoContainer.style.position = 'relative';
-
-    // Create the actual video element container
-    const videoElement = document.createElement('div');
-    videoElement.style.position = 'absolute';
-    videoElement.style.top = '0';
-    videoElement.style.left = '0';
-    videoElement.style.width = '100%';
-    videoElement.style.height = '100%';
-
-    videoContainer.appendChild(videoElement);
-    wrapper.appendChild(videoContainer);
-    container.appendChild(wrapper);
-
-    // Play video in the inner container
-    videoTrack.play(videoElement, {fit: 'contain'});
-    console.log('[Palabra] ✓ Video playing in 16:9 container for UID', containerId);
+    // Play video directly in container with 'cover' to fill entire tile
+    videoTrack.play(containerId, {fit: 'cover'});
+    console.log('[Palabra] ✓ Video playing with cover fit for UID', containerId);
   }, []);
 
   /**
