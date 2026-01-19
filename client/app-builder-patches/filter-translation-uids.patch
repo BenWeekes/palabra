@@ -1,0 +1,80 @@
+commit 5f0973643865dd47358a3d920c4f5fc5072efa84
+Author: Ubuntu <ubuntu@ip-172-31-24-72.us-west-2.compute.internal>
+Date:   Wed Jan 7 19:10:25 2026 +0000
+
+    fix: Filter translation UIDs from video tiles and update dev server port
+    
+    - Filter UIDs 3000-4999 from rendering in VideoComponent (translation streams)
+    - Change webpack dev server port from 9000 to 7001 for nginx proxy
+    - Allow external hosts for dev server access
+    
+    🤖 Generated with [Claude Code](https://claude.com/claude-code)
+    
+    Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+
+diff --git a/template/src/pages/video-call/VideoComponent.tsx b/template/src/pages/video-call/VideoComponent.tsx
+index 10ccbbe4..bf8c57d0 100644
+--- a/template/src/pages/video-call/VideoComponent.tsx
++++ b/template/src/pages/video-call/VideoComponent.tsx
+@@ -19,6 +19,14 @@ const VideoComponent = () => {
+   const layoutsData = useLayoutsData();
+   const {currentLayout, setLayout} = useLayout();
+   const {activeUids, pinnedUid} = useContent();
++
++  // PALABRA FIX: Filter out translation UIDs (3000-4999) from rendering
++  // These UIDs are used for translation streams and should not appear as tiles
++  const filteredActiveUids = activeUids.filter((uid) => {
++    const uidNum = typeof uid === 'string' ? parseInt(uid, 10) : uid;
++    return uidNum < 3000 || uidNum >= 5000;
++  });
++
+   const {rtcProps} = useContext(PropsContext);
+   const isDesktop = useIsDesktop();
+   const {audienceUids, hostUids} = useLiveStreamDataContext();
+@@ -58,7 +66,7 @@ const VideoComponent = () => {
+   const currentLayoutRef = useRef(currentLayout);
+   const gridLayoutName = getGridLayoutName();
+   useEffect(() => {
+-    if (activeUids && activeUids.length === 1 && !isCustomLayoutUsed) {
++    if (filteredActiveUids && filteredActiveUids.length === 1 && !isCustomLayoutUsed) {
+       if (pinnedUid) {
+         dispatch({type: 'UserPin', value: [0]});
+         dispatch({type: 'UserSecondaryPin', value: [0]});
+@@ -67,7 +75,7 @@ const VideoComponent = () => {
+         setLayout(gridLayoutName);
+       }
+     }
+-  }, [activeUids, isCustomLayoutUsed]);
++  }, [filteredActiveUids, isCustomLayoutUsed]);
+ 
+   useEffect(() => {
+     currentLayoutRef.current = currentLayout;
+@@ -86,7 +94,7 @@ const VideoComponent = () => {
+     ) {
+       return false;
+     }
+-    if (activeUids.length == 1) return true;
++    if (filteredActiveUids.length == 1) return true;
+     return false;
+   };
+ 
+@@ -104,8 +112,8 @@ const VideoComponent = () => {
+             flexDirection: isDesktop() ? 'row' : 'column',
+             justifyContent: 'space-between',
+           }}>
+-          <CurrentLayout renderData={activeUids} />
+-          {((!$config.EVENT_MODE && activeUids.length === 1) ||
++          <CurrentLayout renderData={filteredActiveUids} />
++          {((!$config.EVENT_MODE && filteredActiveUids.length === 1) ||
+             ($config.EVENT_MODE &&
+               hostUids.concat(audienceUids)?.length === 1)) &&
+           (layoutsData[layout].name === DefaultLayouts[0].name ||
+@@ -120,7 +128,7 @@ const VideoComponent = () => {
+         </View>
+       );
+     }
+-    return <CurrentLayout renderData={activeUids} />;
++    return <CurrentLayout renderData={filteredActiveUids} />;
+   } else {
+     return <></>;
+   }
