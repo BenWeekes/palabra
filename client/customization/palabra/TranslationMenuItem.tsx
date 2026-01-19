@@ -1,6 +1,7 @@
 /**
- * Translation Menu Item Component
+ * Translation Menu Item Components
  * Displays in the user action menu (3-dot menu) for remote participants
+ * Supports both translation and persistent avatar mode
  */
 
 import React, {useState} from 'react';
@@ -10,7 +11,7 @@ import {useTranslation} from './TranslationProvider';
 import {UserActionMenuItem} from '../../src/atoms/ActionMenu';
 import ThemeConfig from '../../src/theme';
 
-interface TranslationMenuItemProps {
+interface MenuItemProps {
   closeActionMenu: () => void;
   targetUid: UidType;
   hostMeetingId?: string;
@@ -18,10 +19,47 @@ interface TranslationMenuItemProps {
 }
 
 /**
- * This component appears in the user action menu for remote participants
- * Allows starting/stopping translation for a specific user's audio
+ * Avatar Menu Item - Start/Stop Avatar (persistent mode)
+ * Avatar shows with original audio, independent of translation
  */
-export const TranslationMenuItem: React.FC<TranslationMenuItemProps> = ({
+export const AvatarMenuItem: React.FC<MenuItemProps> = ({
+  closeActionMenu,
+  targetUid,
+}) => {
+  const {isAvatarActive, startAvatar, stopAvatar} = useTranslation();
+
+  const uidString = targetUid.toString();
+  const avatarActive = isAvatarActive(uidString);
+
+  const handleAvatarClick = async () => {
+    closeActionMenu();
+    try {
+      if (avatarActive) {
+        await stopAvatar(uidString);
+      } else {
+        await startAvatar(uidString);
+      }
+    } catch (error) {
+      console.error('[Palabra] Avatar action failed:', error);
+    }
+  };
+
+  return (
+    <UserActionMenuItem
+      label={avatarActive ? 'Stop Avatar' : 'Start Avatar'}
+      icon="person"
+      iconColor={avatarActive ? '#FF6B6B' : $config.SECONDARY_ACTION_COLOR}
+      textColor={avatarActive ? '#FF6B6B' : $config.SECONDARY_ACTION_COLOR}
+      onPress={handleAvatarClick}
+    />
+  );
+};
+
+/**
+ * Translation Menu Item - Translate Audio
+ * When avatar is active, translation switches avatar to translated audio
+ */
+export const TranslationMenuItem: React.FC<MenuItemProps> = ({
   closeActionMenu,
   targetUid,
 }) => {
@@ -31,18 +69,18 @@ export const TranslationMenuItem: React.FC<TranslationMenuItemProps> = ({
     startTranslation,
     stopTranslation,
     availableLanguages,
+    isAvatarActive,
   } = useTranslation();
 
   const uidString = targetUid.toString();
   const translationActive = isTranslating(uidString);
+  const avatarActive = isAvatarActive(uidString);
 
   const handleTranslationClick = () => {
     if (translationActive) {
-      // Stop translation
       closeActionMenu();
       stopTranslation(uidString);
     } else {
-      // Show language selection modal (don't close menu yet)
       setShowLanguageModal(true);
     }
   };
@@ -59,7 +97,6 @@ export const TranslationMenuItem: React.FC<TranslationMenuItemProps> = ({
       );
     } catch (error) {
       console.error('[Palabra] Failed to start translation:', error);
-      // TODO: Show error toast to user
     }
   };
 
@@ -68,12 +105,12 @@ export const TranslationMenuItem: React.FC<TranslationMenuItemProps> = ({
       <UserActionMenuItem
         label={translationActive ? 'Stop Translation' : 'Translate Audio'}
         icon="globe"
-        iconColor={$config.SECONDARY_ACTION_COLOR}
-        textColor={$config.SECONDARY_ACTION_COLOR}
+        iconColor={translationActive ? '#4ECDC4' : $config.SECONDARY_ACTION_COLOR}
+        textColor={translationActive ? '#4ECDC4' : $config.SECONDARY_ACTION_COLOR}
         onPress={handleTranslationClick}
       />
 
-      {/* Compact Language Dropdown */}
+      {/* Language Selection Modal */}
       <Modal
         visible={showLanguageModal}
         transparent={true}
@@ -91,6 +128,11 @@ export const TranslationMenuItem: React.FC<TranslationMenuItemProps> = ({
           }}>
           <View style={styles.dropdownContainer}>
             <Text style={styles.dropdownTitle}>Translate to:</Text>
+            {avatarActive && (
+              <Text style={styles.avatarHint}>
+                Avatar will switch to translated audio
+              </Text>
+            )}
             <View style={styles.languageGrid}>
               {availableLanguages.map(lang => (
                 <TouchableOpacity
@@ -132,7 +174,14 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: $config.FONT_COLOR,
     fontFamily: ThemeConfig.FontFamily.sansPro,
+    marginBottom: 8,
+  },
+  avatarHint: {
+    fontSize: ThemeConfig.FontSize.small,
+    color: '#4ECDC4',
+    fontFamily: ThemeConfig.FontFamily.sansPro,
     marginBottom: 12,
+    fontStyle: 'italic',
   },
   languageGrid: {
     flexDirection: 'row',

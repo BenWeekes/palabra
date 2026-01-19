@@ -403,7 +403,7 @@ For avatar mode (`ENABLE_ANAM=true`), the backend requires Agora RTC Server SDK 
 
 **No manual SDK installation needed** - everything is included in the repo and handled by Docker.
 
-## Two Operating Modes
+## Three Operating Modes
 
 ### Audio-Only Mode (ENABLE_ANAM=false)
 - Palabra translates speech → Client receives audio stream (UID 3000)
@@ -414,6 +414,43 @@ For avatar mode (`ENABLE_ANAM=true`), the backend requires Agora RTC Server SDK 
 - Palabra translates → Bot forwards to Anam → Lip-synced avatar (UID 4000)
 - User sees/hears French-speaking avatar in original user's tile
 - Premium experience with video
+
+### Persistent Avatar Mode (ENABLE_ANAM=true + Start Avatar)
+- Avatar is always visible, lip-syncing to the speaker's ORIGINAL audio
+- When translation is enabled, avatar seamlessly switches to translated audio
+- When translation is stopped, avatar switches back to original audio (avatar persists)
+- Provides continuous avatar experience independent of translation state
+
+**User Flow (Persistent Avatar):**
+1. Click on remote user → "Start Avatar" → Avatar appears (original audio)
+2. Click "Translate Audio" → Avatar switches to translated audio
+3. Click "Stop Translation" → Avatar continues with original audio
+4. Click "Stop Avatar" → Avatar removed, original video restored
+
+**Technical Implementation:**
+
+| Action | Frontend | Backend | Bot Process |
+|--------|----------|---------|-------------|
+| Start Avatar | Calls `/v1/avatar/start`, stores `anamUid` | Creates bot subscribing to source user | Subscribes to original audio, forwards to Anam |
+| Start Translation | Calls `/v1/palabra/start`, detects existing avatar | Returns same `anamUid`, sends `SWITCH_AUDIO_SOURCE` | Unsubscribes from source, subscribes to Palabra UID |
+| Stop Translation | Keeps avatar subscription, clears translation state | Sends `SWITCH_AUDIO_SOURCE` back to source | Unsubscribes from Palabra, subscribes to source |
+| Stop Avatar | Unsubscribes from avatar, restores original | Stops bot process, cleans up sessions | Process terminates |
+
+**New API Endpoints:**
+```
+POST /v1/avatar/start
+  Request:  { channel: string, sourceUid: string }
+  Response: { success: bool, anamUid: number, sessionId: string }
+
+POST /v1/avatar/stop
+  Request:  { channel: string, sourceUid: string }
+  Response: { success: bool }
+```
+
+**IPC Message (Parent → Child):**
+```
+SWITCH_AUDIO_SOURCE { task_id, new_uid, is_translation }
+```
 
 **Switch modes**: Change `ENABLE_ANAM` in backend `.env` and restart
 
@@ -485,6 +522,11 @@ See [palabra-architecture.md](docs/palabra-architecture.md) for full details.
   - Idle detection (default 60s) - stops if no audio activity
   - Target-left detection - stops immediately if Palabra bot leaves channel
 
+✅ **Persistent Avatar Mode** - Avatar can be started independently from translation:
+  - `/v1/avatar/start` - Start avatar (subscribes to original audio)
+  - `/v1/avatar/stop` - Stop avatar
+  - Dynamic audio source switching via IPC when translation starts/stops
+
 ## Configuration
 
 ### Backend (.env)
@@ -550,14 +592,34 @@ app-builder-core/template/
 
 ## Key Code Changes
 
-**Backend** (services/palabra.go:300-405):
+**Backend** (services/palabra.go):
 - When `ENABLE_ANAM=true`: Creates bot (UID 5000) + Anam session, returns UID 4000
 - When `ENABLE_ANAM=false`: Returns UID 3000 (Palabra audio-only)
+- `/v1/avatar/start`: Starts persistent avatar (bot subscribes to source user's original audio)
+- `/v1/avatar/stop`: Stops persistent avatar
+- `AvatarSession` struct tracks persistent avatars independently from translations
+- `PalabraStart`: Detects existing avatar and switches audio source instead of creating new bot
+- `PalabraStop`: Preserves avatar if started independently (switches back to original audio)
+
+**Backend** (services/bot_process_manager.go):
+- `SwitchAudioSource()`: Sends SWITCH_AUDIO_SOURCE IPC message to running bot process
+
+**Backend** (services/ipc/):
+- `SWITCH_AUDIO_SOURCE` message type for dynamic audio source switching
+- `SwitchAudioSourcePayload` contains new_uid and is_translation flag
 
 **Frontend** (TranslationProvider.tsx):
-- Lines 109-148: Monkey-patch `client.subscribe()` to filter UIDs 3000-4999
-- Lines 612-662: Explicit subscription on `user-published` event
-- Lines 455-502: Late-arrival handling for race conditions
+- Monkey-patch `client.subscribe()` to filter UIDs 3000-4999
+- Explicit subscription on `user-published` event
+- Late-arrival handling for race conditions
+- `activeAvatars` state tracks persistent avatar sessions
+- `startAvatar()` / `stopAvatar()` for persistent avatar control
+- Updated `handleUserPublished` to handle both translation and avatar UIDs
+
+**Frontend** (TranslationMenuItem.tsx):
+- "Start Avatar" / "Stop Avatar" menu items
+- "Translate Audio" / "Stop Translation" menu items
+- Hint shown when avatar is active and selecting translation language
 
 ## Troubleshooting
 

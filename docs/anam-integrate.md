@@ -4,7 +4,11 @@
 
 Anam provides lip-synced avatar video for Palabra translations. Enabled via `ENABLE_ANAM=true` in backend `.env`.
 
-**Architecture**: Backend bot subscribes to Palabra audio (UID 3000), forwards to Anam WebSocket, Anam publishes avatar as UID 4000.
+**Architecture**: Backend bot subscribes to audio source (either Palabra UID 3000 for translation or original user for persistent avatar), forwards to Anam WebSocket, Anam publishes avatar as UID 4000.
+
+**Two Modes**:
+- **Translation Mode**: Bot subscribes to Palabra UID 3000 (translated audio)
+- **Persistent Avatar Mode**: Bot subscribes to original user (original audio), switches to Palabra when translation starts
 
 **Three-UID System**:
 - **UID 3000**: Palabra translation (audio-only, bot subscribes)

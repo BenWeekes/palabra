@@ -26,6 +26,8 @@ The Agora Go SDK wraps native C code that can crash with segfaults. Go's `recove
 │  Endpoints:                                                      │
 │  - POST /v1/palabra/start  - Start translation session          │
 │  - POST /v1/palabra/stop   - Stop translation session           │
+│  - POST /v1/avatar/start   - Start persistent avatar            │
+│  - POST /v1/avatar/stop    - Stop persistent avatar             │
 │                                                                  │
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │                  BotProcessManager                          │ │
@@ -71,11 +73,29 @@ Communication between parent and child uses FlatBuffers for efficient binary ser
 **Parent → Child:**
 - `START_SESSION` - Start a new translation session with config
 - `STOP_SESSION` - Gracefully stop the session
+- `SWITCH_AUDIO_SOURCE` - Switch bot's audio subscription to a different UID (for persistent avatar mode)
 
 **Child → Parent:**
 - `STATUS_UPDATE` - Session state changes (CONNECTING, STREAMING, etc.)
 - `LOG_MESSAGE` - Log output from child process
 - `ERROR_RESPONSE` - Error occurred (fatal or non-fatal)
+
+### SWITCH_AUDIO_SOURCE (Persistent Avatar Mode)
+
+When translation starts/stops with an active avatar, the parent sends `SWITCH_AUDIO_SOURCE` to change which UID the bot subscribes to:
+
+```
+Parent → Child: SWITCH_AUDIO_SOURCE {
+  task_id: "avatar-channel-uid-xxx",
+  new_uid: 3000,        // Palabra UID for translation, or source UID for original
+  is_translation: true  // true = Palabra audio, false = original user audio
+}
+```
+
+The child process then:
+1. Unsubscribes from current audio source
+2. Subscribes to the new UID
+3. Continues forwarding audio to Anam
 
 ### Message Framing
 
@@ -223,4 +243,75 @@ Session lifecycle is logged:
 ```
 [BotProcessManager] Task xxx status: CONNECTING_ANAM - Connecting to Anam API
 [BotProcessManager] Task xxx status: STREAMING - Audio streaming active
+```
+
+## Persistent Avatar Mode
+
+Persistent Avatar Mode allows the avatar to be started independently from translation. The avatar lip-syncs to the speaker's original audio, and when translation is enabled, seamlessly switches to the translated audio.
+
+### User Flow
+
+1. **Start Avatar** → Avatar appears, lip-syncing to original audio
+2. **Start Translation** → Avatar switches to translated audio (no visual change)
+3. **Stop Translation** → Avatar continues with original audio
+4. **Stop Avatar** → Avatar removed, original video restored
+
+### Session Management
+
+Avatar sessions are tracked separately from translation sessions:
+
+```go
+// Avatar session (in palabra.go)
+type AvatarSession struct {
+    SessionID    string    // Bot process task ID
+    Channel      string
+    SourceUID    string    // Original user being avatarized
+    AnamUID      uint32    // Anam avatar UID (4000+)
+    BotUID       uint32    // Bot process UID (4500+)
+    IsTranslating bool     // Currently translating?
+}
+
+var avatarSessions = make(map[string]*AvatarSession) // key: "channel:sourceUid"
+```
+
+### Audio Source Switching
+
+When translation starts/stops with an active avatar:
+
+1. **Translation Starts**: Backend detects existing avatar, sends `SWITCH_AUDIO_SOURCE` with Palabra UID (3000)
+2. **Translation Stops**: Backend sends `SWITCH_AUDIO_SOURCE` with source user UID
+
+The bot process handles the switch:
+```go
+// In bot_worker/main.go
+case ipc.MessageTypeSWITCH_AUDIO_SOURCE:
+    newUID := payload.NewUid()
+    isTranslation := payload.IsTranslation()
+
+    // Unsubscribe from current source
+    bot.Unsubscribe(currentUID)
+
+    // Subscribe to new source
+    bot.Subscribe(newUID)
+```
+
+### Frontend Integration
+
+The frontend tracks avatar state separately:
+
+```typescript
+// TranslationProvider.tsx
+const [activeAvatars, setActiveAvatars] = useState<Map<string, AvatarSession>>(new Map());
+
+// Start avatar (calls /v1/avatar/start)
+const startAvatar = async (sourceUid: string) => {
+    const response = await fetch('/v1/avatar/start', {...});
+    // Store avatar session, subscribe to Anam UID 4000
+};
+
+// Start translation (detects existing avatar)
+const startTranslation = async (sourceUid: string, targetLanguage: string) => {
+    // If avatar active, backend switches audio source
+    // Frontend keeps same subscription (UID 4000)
+};
 ```
