@@ -186,6 +186,33 @@ func (w *BotWorker) Stop() {
 	close(w.stopChan)
 }
 
+// SwitchAudioSource changes the audio source the bot subscribes to
+// Used for persistent avatar mode to switch between original user audio and Palabra translated audio
+func (w *BotWorker) SwitchAudioSource(newUID uint32, isTranslation bool) error {
+	w.mu.Lock()
+	if !w.isRunning || w.agoraBot == nil {
+		w.mu.Unlock()
+		return fmt.Errorf("worker not running or bot not initialized")
+	}
+	w.mu.Unlock()
+
+	newUIDStr := fmt.Sprintf("%d", newUID)
+	mode := "original"
+	if isTranslation {
+		mode = "translation"
+	}
+
+	w.log(botipc.LogLevelINFO, "Switching audio source to UID %d (%s mode)", newUID, mode)
+
+	if err := w.agoraBot.SwitchAudioSource(newUIDStr); err != nil {
+		w.log(botipc.LogLevelERROR, "Failed to switch audio source: %v", err)
+		return err
+	}
+
+	w.log(botipc.LogLevelINFO, "Audio source switched to UID %d (%s mode)", newUID, mode)
+	return nil
+}
+
 // cleanup stops all components
 func (w *BotWorker) cleanup() {
 	if w.agoraBot != nil {

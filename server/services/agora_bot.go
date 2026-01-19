@@ -322,6 +322,61 @@ func (b *AgoraBot) sendPeriodicSilence() {
 	}
 }
 
+// SwitchAudioSource changes the UID the bot subscribes to (for persistent avatar mode)
+// This allows switching between original user audio and Palabra translated audio
+func (b *AgoraBot) SwitchAudioSource(newUID string) error {
+	if !b.isConnected || b.conn == nil {
+		return fmt.Errorf("bot not connected")
+	}
+
+	oldUID := b.targetUID
+	if oldUID == newUID {
+		fmt.Printf("[AgoraBot] Audio source unchanged (already subscribed to UID %s)\n", newUID)
+		return nil
+	}
+
+	fmt.Printf("[AgoraBot] 🔄 Switching audio source: UID %s → UID %s\n", oldUID, newUID)
+
+	localUser := b.conn.GetLocalUser()
+	if localUser == nil {
+		return fmt.Errorf("localUser is nil, cannot switch audio source")
+	}
+
+	// Unsubscribe from old UID
+	ret := localUser.UnsubscribeAudio(oldUID)
+	if ret != 0 {
+		fmt.Printf("[AgoraBot] WARNING: Failed to unsubscribe from UID %s (ret=%d), continuing anyway\n", oldUID, ret)
+	} else {
+		fmt.Printf("[AgoraBot] ✅ Unsubscribed from UID %s\n", oldUID)
+	}
+
+	// Update target UID
+	b.targetUID = newUID
+
+	// Subscribe to new UID
+	ret = localUser.SubscribeAudio(newUID)
+	if ret != 0 {
+		fmt.Printf("[AgoraBot] ERROR: Failed to subscribe to UID %s (ret=%d)\n", newUID, ret)
+		return fmt.Errorf("failed to subscribe to UID %s (ret=%d)", newUID, ret)
+	}
+
+	fmt.Printf("[AgoraBot] ✅ Subscribed to UID %s - audio source switch complete\n", newUID)
+
+	// Reset VAD state for clean audio handling
+	b.sendingAudio = false
+	b.speechFrames = 0
+	b.silenceFrames = 0
+	b.isSpeaking = false
+	b.lastAudioTime = time.Now()
+
+	return nil
+}
+
+// GetTargetUID returns the current target UID the bot is subscribed to
+func (b *AgoraBot) GetTargetUID() string {
+	return b.targetUID
+}
+
 // Stop disconnects the bot and releases resources
 func (b *AgoraBot) Stop() error {
 	if !b.isConnected {

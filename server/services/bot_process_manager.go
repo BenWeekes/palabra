@@ -287,6 +287,34 @@ func (m *BotProcessManager) GetSession(taskID string) (*BotProcess, bool) {
 	return proc, ok
 }
 
+// SwitchAudioSource sends a SWITCH_AUDIO_SOURCE command to a running session
+// Used for persistent avatar mode to switch between original and translated audio
+func (m *BotProcessManager) SwitchAudioSource(taskID string, newUID uint32, isTranslation bool) error {
+	m.mu.RLock()
+	proc, ok := m.processes[taskID]
+	m.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("no session found for task %s", taskID)
+	}
+
+	mode := "original"
+	if isTranslation {
+		mode = "translation"
+	}
+	m.logger.Printf("Switching audio source for task %s to UID %d (%s mode)", taskID, newUID, mode)
+
+	// Build and send SWITCH_AUDIO_SOURCE message
+	switchMsg := ipc.BuildSwitchAudioSourceMessage(taskID, newUID, isTranslation)
+	if err := proc.stdinWriter.WriteMessage(switchMsg); err != nil {
+		m.logger.Printf("Failed to send SWITCH_AUDIO_SOURCE for task %s: %v", taskID, err)
+		return fmt.Errorf("failed to send switch audio command: %w", err)
+	}
+
+	m.logger.Printf("SWITCH_AUDIO_SOURCE sent successfully for task %s", taskID)
+	return nil
+}
+
 // GetAllSessions returns all active sessions
 func (m *BotProcessManager) GetAllSessions() map[string]*BotProcess {
 	m.mu.RLock()

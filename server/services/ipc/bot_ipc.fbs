@@ -8,6 +8,7 @@ enum MessageType : byte {
   // Parent -> Child commands
   START_SESSION = 0,
   STOP_SESSION = 1,
+  SWITCH_AUDIO_SOURCE = 2,  // NEW: Switch audio source for persistent avatar mode
 
   // Child -> Parent responses
   STATUS_UPDATE = 10,
@@ -61,6 +62,13 @@ table StartSessionPayload {
 table StopSessionPayload {
   task_id: string;
   reason: string;
+}
+
+// Parent -> Child: Switch audio source (for persistent avatar mode)
+table SwitchAudioSourcePayload {
+  task_id: string;
+  new_uid: uint32;            // New UID to subscribe to
+  is_translation: bool;       // true if switching to Palabra, false if switching back to original
 }
 
 // Child -> Parent: Status update

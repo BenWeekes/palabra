@@ -95,11 +95,52 @@ type TaskInfo struct {
 	Language    string
 }
 
+// AvatarSession represents a standalone avatar session (persistent avatar mode)
+type AvatarSession struct {
+	SessionID      string `json:"sessionId"`
+	Channel        string `json:"channel"`
+	SourceUID      string `json:"sourceUid"`
+	AnamUID        uint32 `json:"anamUid"`
+	BotUID         uint32 `json:"botUid"`
+	BotProcessID   string `json:"botProcessId"`
+	HasTranslation bool   `json:"hasTranslation"`   // true if Palabra is active on this avatar
+	PalabraTaskID  string `json:"palabraTaskId"`    // set when translation active
+	PalabraUID     uint32 `json:"palabraUid"`       // Palabra stream UID when translating
+}
+
+// AvatarStartRequest represents the request to start an avatar
+type AvatarStartRequest struct {
+	Channel   string `json:"channel"`
+	SourceUID string `json:"sourceUid"`
+}
+
+// AvatarStartResponse represents the response for start avatar
+type AvatarStartResponse struct {
+	Success   bool   `json:"success"`
+	SessionID string `json:"sessionId,omitempty"`
+	AnamUID   uint32 `json:"anamUid,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// AvatarStopRequest represents the request to stop an avatar
+type AvatarStopRequest struct {
+	Channel   string `json:"channel"`
+	SourceUID string `json:"sourceUid"`
+}
+
+// AvatarStopResponse represents the response for stop avatar
+type AvatarStopResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
 var (
 	// Per-channel counters for Anam UIDs (channel -> next available UID)
 	channelAnamCounters = make(map[string]uint32)
 	// Task deduplication: map key is "channel:sourceUid:targetLanguage"
 	activeTasksByKey = make(map[string]*TaskInfo)
+	// Avatar sessions: map key is "channel:sourceUid"
+	avatarSessions = make(map[string]*AvatarSession)
 )
 
 // getNextAnamUID returns the next available Anam UID for a channel
@@ -338,115 +379,159 @@ func (s *ServiceRouter) PalabraStart(w http.ResponseWriter, r *http.Request) {
 	enableAnam := viper.GetBool("ENABLE_ANAM")
 
 	if enableAnam {
-		s.Logger.Info().Msg("Anam is enabled, starting avatar bot")
+		s.Logger.Info().Msg("Anam is enabled, checking for existing avatar")
 
-		// Get Anam configuration
-		avatarID := viper.GetString("ANAM_AVATAR_ID")
+		// Check if a persistent avatar already exists for this source user
+		existingAvatar := GetAvatarSession(req.Channel, req.SourceUID)
 
-		if avatarID == "" {
-			s.Logger.Warn().Msg("ANAM_AVATAR_ID not configured, skipping Anam")
+		if existingAvatar != nil {
+			// PERSISTENT AVATAR MODE: Avatar already running, switch audio source to Palabra
+			s.Logger.Info().
+				Str("channel", req.Channel).
+				Str("sourceUid", req.SourceUID).
+				Str("sessionID", existingAvatar.SessionID).
+				Uint32("anamUID", existingAvatar.AnamUID).
+				Msg("[PERSISTENT-AVATAR] Avatar exists, switching audio to Palabra stream")
+
+			// Get Palabra UID for this translation
+			var palabraUIDNum uint32
+			if len(streams) > 0 {
+				fmt.Sscanf(streams[0].UID, "%d", &palabraUIDNum)
+			} else {
+				palabraUIDNum = transUIDBase // Default to 3000
+			}
+
+			// Switch audio source from original user to Palabra
+			botManager := GetBotProcessManager()
+			err := botManager.SwitchAudioSource(existingAvatar.SessionID, palabraUIDNum, true)
+			if err != nil {
+				s.Logger.Error().Err(err).Msg("[PERSISTENT-AVATAR] Failed to switch audio source")
+				// Continue anyway - translation is started, avatar might catch up
+			} else {
+				s.Logger.Info().
+					Uint32("palabraUID", palabraUIDNum).
+					Msg("[PERSISTENT-AVATAR] Audio source switched to Palabra stream")
+			}
+
+			// Update avatar session to track translation state
+			UpdateAvatarTranslation(req.Channel, req.SourceUID, true, taskID, palabraUIDNum)
+
+			// Update streams to use existing Anam UID (client already subscribed)
+			for i := range streams {
+				streams[i].UID = fmt.Sprintf("%d", existingAvatar.AnamUID)
+			}
 		} else {
-			// Create Agora bot for each translation stream
-			for i, stream := range streams {
-				// Save original Palabra UID
-				palabraUID := stream.UID
+			// NO EXISTING AVATAR: Start new avatar + bot (current behavior)
+			s.Logger.Info().Msg("No existing avatar, starting new avatar bot for translation")
 
-				// Generate Anam UID (for avatar video/audio published by Anam)
-				// Uses per-channel counter so each channel starts at 4000
-				anamUIDNum := getNextAnamUID(req.Channel)
-				anamUID := fmt.Sprintf("%d", anamUIDNum)
+			// Get Anam configuration
+			avatarID := viper.GetString("ANAM_AVATAR_ID")
 
-				// Generate Bot UID (for our audio forwarder - should NOT be visible to users)
-				// Bot UID = 4500+ (within 3000-4999 range so frontend filters it out)
-				botUIDNum := uint32(4500 + i)
-				botUID := fmt.Sprintf("%d", botUIDNum)
+			if avatarID == "" {
+				s.Logger.Warn().Msg("ANAM_AVATAR_ID not configured, skipping Anam")
+			} else {
+				// Create Agora bot for each translation stream
+				for i, stream := range streams {
+					// Save original Palabra UID
+					palabraUID := stream.UID
 
-				s.Logger.Info().
-					Str("channel", req.Channel).
-					Str("palabraUID", palabraUID).
-					Str("anamUID", anamUID).
-					Str("botUID", botUID).
-					Msg("UID assignment for Anam avatar")
+					// Generate Anam UID (for avatar video/audio published by Anam)
+					// Uses per-channel counter so each channel starts at 4000
+					anamUIDNum := getNextAnamUID(req.Channel)
+					anamUID := fmt.Sprintf("%d", anamUIDNum)
 
-				// Update stream UID immediately - client should subscribe to Anam UID, not Palabra
-				streams[i].UID = anamUID
+					// Generate Bot UID (for our audio forwarder - should NOT be visible to users)
+					// Bot UID = 4500+ (within 3000-4999 range so frontend filters it out)
+					botUIDNum := uint32(4500 + i)
+					botUID := fmt.Sprintf("%d", botUIDNum)
 
-				// Generate token for Anam UID (Anam joins as this UID via init message)
-				anamToken, err := rtctoken.BuildTokenWithUID(
-					appID,
-					appCertificate,
-					req.Channel,
-					anamUIDNum,
-					rtctoken.RolePublisher,
-					expireTime,
-				)
-				if err != nil {
-					s.Logger.Error().Err(err).Str("anamUID", anamUID).Msg("Failed to generate Anam token")
-					continue
+					s.Logger.Info().
+						Str("channel", req.Channel).
+						Str("palabraUID", palabraUID).
+						Str("anamUID", anamUID).
+						Str("botUID", botUID).
+						Msg("UID assignment for Anam avatar")
+
+					// Update stream UID immediately - client should subscribe to Anam UID, not Palabra
+					streams[i].UID = anamUID
+
+					// Generate token for Anam UID (Anam joins as this UID via init message)
+					anamToken, err := rtctoken.BuildTokenWithUID(
+						appID,
+						appCertificate,
+						req.Channel,
+						anamUIDNum,
+						rtctoken.RolePublisher,
+						expireTime,
+					)
+					if err != nil {
+						s.Logger.Error().Err(err).Str("anamUID", anamUID).Msg("Failed to generate Anam token")
+						continue
+					}
+
+					// Generate token for Bot UID (our audio forwarder bot)
+					botToken, err := rtctoken.BuildTokenWithUID(
+						appID,
+						appCertificate,
+						req.Channel,
+						botUIDNum,
+						rtctoken.RoleSubscriber, // Bot only subscribes, doesn't publish to channel
+						expireTime,
+					)
+					if err != nil {
+						s.Logger.Error().Err(err).Str("botUID", botUID).Msg("Failed to generate bot token")
+						continue
+					}
+
+					// Use BotProcessManager to spawn isolated child process
+					// This prevents Agora SDK crashes from bringing down the HTTP server
+					botManager := GetBotProcessManager()
+
+					// Get Anam configuration
+					anamAPIKey := viper.GetString("ANAM_API_KEY")
+					anamBaseURL := viper.GetString("ANAM_BASE_URL")
+					if anamBaseURL == "" {
+						anamBaseURL = "https://api.anam.ai"
+					}
+
+					// Parse UIDs to uint32
+					var palabraUIDNum uint32
+					fmt.Sscanf(palabraUID, "%d", &palabraUIDNum)
+
+					config := StartSessionConfig{
+						TaskID:         fmt.Sprintf("%s-%d", taskID, i),
+						AppID:          appID,
+						Channel:        req.Channel,
+						BotUID:         botUIDNum,
+						BotToken:       botToken,
+						PalabraUID:     palabraUIDNum,
+						AnamAPIKey:     anamAPIKey,
+						AnamBaseURL:    anamBaseURL,
+						AnamAvatarID:   avatarID,
+						AnamUID:        anamUIDNum,
+						AnamToken:      anamToken,
+						TargetLanguage: stream.Language,
+					}
+
+					s.Logger.Info().
+						Str("palabraUID", palabraUID).
+						Str("anamUID", anamUID).
+						Str("botUID", botUID).
+						Msg("Starting bot process for Anam avatar")
+
+					proc, err := botManager.StartSession(config)
+					if err != nil {
+						s.Logger.Error().Err(err).Str("anamUID", anamUID).Msg("Failed to start bot process")
+						continue
+					}
+
+					s.Logger.Info().
+						Str("palabraUID", palabraUID).
+						Str("anamUID", anamUID).
+						Str("botUID", botUID).
+						Int("pid", proc.cmd.Process.Pid).
+						Msg("Bot process started - isolated process handles Agora bot and Anam client")
 				}
-
-				// Generate token for Bot UID (our audio forwarder bot)
-				botToken, err := rtctoken.BuildTokenWithUID(
-					appID,
-					appCertificate,
-					req.Channel,
-					botUIDNum,
-					rtctoken.RoleSubscriber, // Bot only subscribes, doesn't publish to channel
-					expireTime,
-				)
-				if err != nil {
-					s.Logger.Error().Err(err).Str("botUID", botUID).Msg("Failed to generate bot token")
-					continue
-				}
-
-				// Use BotProcessManager to spawn isolated child process
-				// This prevents Agora SDK crashes from bringing down the HTTP server
-				botManager := GetBotProcessManager()
-
-				// Get Anam configuration
-				anamAPIKey := viper.GetString("ANAM_API_KEY")
-				anamBaseURL := viper.GetString("ANAM_BASE_URL")
-				if anamBaseURL == "" {
-					anamBaseURL = "https://api.anam.ai"
-				}
-
-				// Parse UIDs to uint32
-				var palabraUIDNum uint32
-				fmt.Sscanf(palabraUID, "%d", &palabraUIDNum)
-
-				config := StartSessionConfig{
-					TaskID:         fmt.Sprintf("%s-%d", taskID, i),
-					AppID:          appID,
-					Channel:        req.Channel,
-					BotUID:         botUIDNum,
-					BotToken:       botToken,
-					PalabraUID:     palabraUIDNum,
-					AnamAPIKey:     anamAPIKey,
-					AnamBaseURL:    anamBaseURL,
-					AnamAvatarID:   avatarID,
-					AnamUID:        anamUIDNum,
-					AnamToken:      anamToken,
-					TargetLanguage: stream.Language,
-				}
-
-				s.Logger.Info().
-					Str("palabraUID", palabraUID).
-					Str("anamUID", anamUID).
-					Str("botUID", botUID).
-					Msg("Starting bot process for Anam avatar")
-
-				proc, err := botManager.StartSession(config)
-				if err != nil {
-					s.Logger.Error().Err(err).Str("anamUID", anamUID).Msg("Failed to start bot process")
-					continue
-				}
-
-				s.Logger.Info().
-					Str("palabraUID", palabraUID).
-					Str("anamUID", anamUID).
-					Str("botUID", botUID).
-					Int("pid", proc.cmd.Process.Pid).
-					Msg("Bot process started - isolated process handles Agora bot and Anam client")
 			}
 		}
 	}
@@ -561,18 +646,58 @@ func (s *ServiceRouter) PalabraStop(w http.ResponseWriter, r *http.Request) {
 	if enableAnam {
 		botManager := GetBotProcessManager()
 
-		// Stop all sessions associated with this task ID
-		// Sessions are keyed as "taskID-index"
-		sessions := botManager.GetAllSessions()
-		for sessionID := range sessions {
-			if len(sessionID) >= len(req.TaskID) && sessionID[:len(req.TaskID)] == req.TaskID {
-				s.Logger.Info().Str("taskId", req.TaskID).Str("sessionId", sessionID).Msg("Stopping bot process")
+		// Check if any avatar session was using this translation (persistent avatar mode)
+		// If so, switch audio back to original instead of stopping the bot
+		avatarPreserved := false
+		for avatarKey, session := range avatarSessions {
+			if session.HasTranslation && session.PalabraTaskID == req.TaskID {
+				s.Logger.Info().
+					Str("avatarKey", avatarKey).
+					Str("sessionID", session.SessionID).
+					Msg("[PERSISTENT-AVATAR] Translation stopping on persistent avatar, switching back to original audio")
 
-				err := botManager.StopSession(sessionID)
+				// Parse source UID
+				var sourceUIDNum uint32
+				fmt.Sscanf(session.SourceUID, "%d", &sourceUIDNum)
+
+				// Switch audio source back from Palabra to original user
+				err := botManager.SwitchAudioSource(session.SessionID, sourceUIDNum, false)
 				if err != nil {
-					s.Logger.Error().Err(err).Str("sessionId", sessionID).Msg("Failed to stop bot process")
+					s.Logger.Error().Err(err).Msg("[PERSISTENT-AVATAR] Failed to switch audio back to original")
+				} else {
+					s.Logger.Info().
+						Uint32("sourceUID", sourceUIDNum).
+						Msg("[PERSISTENT-AVATAR] Audio source switched back to original user")
+				}
+
+				// Update avatar session to clear translation state
+				session.HasTranslation = false
+				session.PalabraTaskID = ""
+				session.PalabraUID = 0
+
+				avatarPreserved = true
+				// Note: Don't break - there could be multiple avatar sessions affected
+			}
+		}
+
+		// Only stop bot processes if no avatar was preserved
+		// (i.e., translation was started without pre-existing avatar)
+		if !avatarPreserved {
+			// Stop all sessions associated with this task ID
+			// Sessions are keyed as "taskID-index"
+			sessions := botManager.GetAllSessions()
+			for sessionID := range sessions {
+				if len(sessionID) >= len(req.TaskID) && sessionID[:len(req.TaskID)] == req.TaskID {
+					s.Logger.Info().Str("taskId", req.TaskID).Str("sessionId", sessionID).Msg("Stopping bot process")
+
+					err := botManager.StopSession(sessionID)
+					if err != nil {
+						s.Logger.Error().Err(err).Str("sessionId", sessionID).Msg("Failed to stop bot process")
+					}
 				}
 			}
+		} else {
+			s.Logger.Info().Str("taskId", req.TaskID).Msg("[PERSISTENT-AVATAR] Avatar preserved, bot process continues with original audio")
 		}
 	}
 
@@ -616,4 +741,266 @@ func (s *ServiceRouter) PalabraTasks(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"tasks":   tasks,
 	})
+}
+
+// AvatarStart handles starting a standalone avatar (persistent avatar mode)
+// The avatar subscribes to the source user's ORIGINAL audio (no translation yet)
+func (s *ServiceRouter) AvatarStart(w http.ResponseWriter, r *http.Request) {
+	s.Logger.Info().Msg("[AVATAR] Start avatar request received")
+
+	// Parse request
+	var req AvatarStartRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.Logger.Error().Err(err).Msg("[AVATAR] Failed to parse request body")
+		respondWithError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// Validate required fields
+	if req.Channel == "" || req.SourceUID == "" {
+		s.Logger.Error().Msg("[AVATAR] Missing required fields")
+		respondWithError(w, http.StatusBadRequest, "Missing required fields: channel, sourceUid")
+		return
+	}
+
+	s.Logger.Info().
+		Str("channel", req.Channel).
+		Str("sourceUid", req.SourceUID).
+		Msg("[AVATAR] Starting avatar for source user")
+
+	// Check if avatar already exists for this source
+	avatarKey := fmt.Sprintf("%s:%s", req.Channel, req.SourceUID)
+	if existing, exists := avatarSessions[avatarKey]; exists {
+		s.Logger.Info().
+			Str("avatarKey", avatarKey).
+			Uint32("anamUID", existing.AnamUID).
+			Msg("[AVATAR] Avatar already exists, returning existing session")
+
+		respondWithJSON(w, http.StatusOK, AvatarStartResponse{
+			Success:   true,
+			SessionID: existing.SessionID,
+			AnamUID:   existing.AnamUID,
+		})
+		return
+	}
+
+	// Check if Anam is enabled
+	enableAnam := viper.GetBool("ENABLE_ANAM")
+	if !enableAnam {
+		s.Logger.Error().Msg("[AVATAR] Anam is not enabled")
+		respondWithError(w, http.StatusBadRequest, "Avatar mode is not enabled (ENABLE_ANAM=false)")
+		return
+	}
+
+	// Get credentials
+	appID := viper.GetString("APP_ID")
+	appCertificate := viper.GetString("APP_CERTIFICATE")
+	avatarID := viper.GetString("ANAM_AVATAR_ID")
+	anamAPIKey := viper.GetString("ANAM_API_KEY")
+	anamBaseURL := viper.GetString("ANAM_BASE_URL")
+
+	if appID == "" || appCertificate == "" {
+		s.Logger.Error().Msg("[AVATAR] Missing Agora credentials")
+		respondWithError(w, http.StatusInternalServerError, "Server configuration error: missing Agora credentials")
+		return
+	}
+
+	if avatarID == "" || anamAPIKey == "" {
+		s.Logger.Error().Msg("[AVATAR] Missing Anam credentials")
+		respondWithError(w, http.StatusInternalServerError, "Server configuration error: missing Anam credentials")
+		return
+	}
+
+	if anamBaseURL == "" {
+		anamBaseURL = "https://api.anam.ai"
+	}
+
+	// Generate UIDs
+	expireTime := uint32(time.Now().Unix()) + 3600*24 // 24 hours
+	anamUIDNum := getNextAnamUID(req.Channel)
+	botUIDNum := uint32(4500) // Bot UID for audio forwarding
+
+	// Parse source UID
+	var sourceUIDNum uint32
+	fmt.Sscanf(req.SourceUID, "%d", &sourceUIDNum)
+
+	// Generate token for Anam UID
+	anamToken, err := rtctoken.BuildTokenWithUID(
+		appID,
+		appCertificate,
+		req.Channel,
+		anamUIDNum,
+		rtctoken.RolePublisher,
+		expireTime,
+	)
+	if err != nil {
+		s.Logger.Error().Err(err).Msg("[AVATAR] Failed to generate Anam token")
+		respondWithError(w, http.StatusInternalServerError, "Failed to generate Anam token")
+		return
+	}
+
+	// Generate token for Bot UID
+	botToken, err := rtctoken.BuildTokenWithUID(
+		appID,
+		appCertificate,
+		req.Channel,
+		botUIDNum,
+		rtctoken.RoleSubscriber,
+		expireTime,
+	)
+	if err != nil {
+		s.Logger.Error().Err(err).Msg("[AVATAR] Failed to generate bot token")
+		respondWithError(w, http.StatusInternalServerError, "Failed to generate bot token")
+		return
+	}
+
+	// Generate unique session ID
+	sessionID := fmt.Sprintf("avatar-%s-%s-%d", req.Channel, req.SourceUID, time.Now().UnixNano())
+
+	// Start bot process
+	// Key difference from translation: bot subscribes to sourceUIDNum (original user), not Palabra UID
+	botManager := GetBotProcessManager()
+
+	config := StartSessionConfig{
+		TaskID:         sessionID,
+		AppID:          appID,
+		Channel:        req.Channel,
+		BotUID:         botUIDNum,
+		BotToken:       botToken,
+		PalabraUID:     sourceUIDNum, // Subscribe to source user's audio, not Palabra
+		AnamAPIKey:     anamAPIKey,
+		AnamBaseURL:    anamBaseURL,
+		AnamAvatarID:   avatarID,
+		AnamUID:        anamUIDNum,
+		AnamToken:      anamToken,
+		TargetLanguage: "", // No target language for avatar-only mode
+	}
+
+	s.Logger.Info().
+		Str("sessionID", sessionID).
+		Uint32("sourceUID", sourceUIDNum).
+		Uint32("anamUID", anamUIDNum).
+		Uint32("botUID", botUIDNum).
+		Msg("[AVATAR] Starting bot process for persistent avatar")
+
+	proc, err := botManager.StartSession(config)
+	if err != nil {
+		s.Logger.Error().Err(err).Msg("[AVATAR] Failed to start bot process")
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to start avatar: %v", err))
+		return
+	}
+
+	// Store avatar session
+	avatarSessions[avatarKey] = &AvatarSession{
+		SessionID:      sessionID,
+		Channel:        req.Channel,
+		SourceUID:      req.SourceUID,
+		AnamUID:        anamUIDNum,
+		BotUID:         botUIDNum,
+		BotProcessID:   sessionID,
+		HasTranslation: false,
+		PalabraTaskID:  "",
+		PalabraUID:     0,
+	}
+
+	s.Logger.Info().
+		Str("sessionID", sessionID).
+		Uint32("anamUID", anamUIDNum).
+		Int("pid", proc.cmd.Process.Pid).
+		Msg("[AVATAR] Avatar started successfully - bot subscribes to source user's original audio")
+
+	respondWithJSON(w, http.StatusOK, AvatarStartResponse{
+		Success:   true,
+		SessionID: sessionID,
+		AnamUID:   anamUIDNum,
+	})
+}
+
+// AvatarStop handles stopping a standalone avatar
+func (s *ServiceRouter) AvatarStop(w http.ResponseWriter, r *http.Request) {
+	s.Logger.Info().Msg("[AVATAR] Stop avatar request received")
+
+	// Parse request
+	var req AvatarStopRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.Logger.Error().Err(err).Msg("[AVATAR] Failed to parse request body")
+		respondWithError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// Validate required fields
+	if req.Channel == "" || req.SourceUID == "" {
+		s.Logger.Error().Msg("[AVATAR] Missing required fields")
+		respondWithError(w, http.StatusBadRequest, "Missing required fields: channel, sourceUid")
+		return
+	}
+
+	avatarKey := fmt.Sprintf("%s:%s", req.Channel, req.SourceUID)
+	s.Logger.Info().
+		Str("channel", req.Channel).
+		Str("sourceUid", req.SourceUID).
+		Str("avatarKey", avatarKey).
+		Msg("[AVATAR] Stopping avatar")
+
+	// Check if avatar exists
+	session, exists := avatarSessions[avatarKey]
+	if !exists {
+		s.Logger.Warn().Str("avatarKey", avatarKey).Msg("[AVATAR] Avatar not found")
+		respondWithJSON(w, http.StatusOK, AvatarStopResponse{
+			Success: true, // Idempotent - already stopped
+		})
+		return
+	}
+
+	// If translation is active on this avatar, stop it first
+	if session.HasTranslation && session.PalabraTaskID != "" {
+		s.Logger.Info().
+			Str("taskID", session.PalabraTaskID).
+			Msg("[AVATAR] Avatar has active translation, stopping Palabra first")
+
+		// Stop Palabra via API call (reuse existing logic)
+		// For now, just clean up the task from our tracking
+		for taskKey, taskInfo := range activeTasksByKey {
+			if taskInfo.TaskID == session.PalabraTaskID {
+				delete(activeTasksByKey, taskKey)
+				s.Logger.Info().Str("taskKey", taskKey).Msg("[AVATAR] Cleaned up Palabra task")
+			}
+		}
+	}
+
+	// Stop bot process
+	botManager := GetBotProcessManager()
+	err := botManager.StopSession(session.SessionID)
+	if err != nil {
+		s.Logger.Error().Err(err).Str("sessionID", session.SessionID).Msg("[AVATAR] Failed to stop bot process")
+		// Continue anyway - might already be stopped
+	}
+
+	// Remove from avatar sessions
+	delete(avatarSessions, avatarKey)
+
+	s.Logger.Info().
+		Str("avatarKey", avatarKey).
+		Str("sessionID", session.SessionID).
+		Msg("[AVATAR] Avatar stopped successfully")
+
+	respondWithJSON(w, http.StatusOK, AvatarStopResponse{
+		Success: true,
+	})
+}
+
+// GetAvatarSession returns the avatar session for a given channel and source UID
+func GetAvatarSession(channel, sourceUID string) *AvatarSession {
+	avatarKey := fmt.Sprintf("%s:%s", channel, sourceUID)
+	return avatarSessions[avatarKey]
+}
+
+// UpdateAvatarTranslation updates the avatar session when translation starts/stops
+func UpdateAvatarTranslation(channel, sourceUID string, hasTranslation bool, taskID string, palabraUID uint32) {
+	avatarKey := fmt.Sprintf("%s:%s", channel, sourceUID)
+	if session, exists := avatarSessions[avatarKey]; exists {
+		session.HasTranslation = hasTranslation
+		session.PalabraTaskID = taskID
+		session.PalabraUID = palabraUID
+	}
 }

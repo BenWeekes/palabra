@@ -125,6 +125,8 @@ func main() {
 	router.HandleFunc("/v1/palabra/start", http.HandlerFunc(requestHandler.PalabraStart))
 	router.HandleFunc("/v1/palabra/stop", http.HandlerFunc(requestHandler.PalabraStop))
 	router.HandleFunc("/v1/palabra/tasks", http.HandlerFunc(requestHandler.PalabraTasks))
+	router.HandleFunc("/v1/avatar/start", http.HandlerFunc(requestHandler.AvatarStart))
+	router.HandleFunc("/v1/avatar/stop", http.HandlerFunc(requestHandler.AvatarStop))
 
 	// Stub endpoints for local development
 	router.HandleFunc("/v1/user/details", http.HandlerFunc(requestHandler.UserDetails))

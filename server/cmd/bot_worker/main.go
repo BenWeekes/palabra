@@ -4,6 +4,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -140,6 +141,29 @@ func runCommandLoop(reader *ipc.MessageReader) {
 
 			// Exit after stop
 			return
+
+		case botipc.MessageTypeSWITCH_AUDIO_SOURCE:
+			payload := ipc.ParseSwitchAudioSourcePayload(payloadBytes)
+			taskID := string(payload.TaskId())
+			newUID := payload.NewUid()
+			isTranslation := payload.IsTranslation()
+
+			logger.Printf("Received SWITCH_AUDIO_SOURCE for task %s: newUID=%d, isTranslation=%v", taskID, newUID, isTranslation)
+
+			if worker != nil {
+				if err := worker.SwitchAudioSource(newUID, isTranslation); err != nil {
+					logger.Printf("Failed to switch audio source: %v", err)
+					sendError(taskID, "SWITCH_AUDIO_FAILED", err.Error(), false)
+				} else {
+					mode := "original"
+					if isTranslation {
+						mode = "translation"
+					}
+					sendLog(taskID, botipc.LogLevelINFO, fmt.Sprintf("Audio source switched to UID %d (%s)", newUID, mode))
+				}
+			} else {
+				logger.Println("Worker not running, ignoring SWITCH_AUDIO_SOURCE")
+			}
 
 		default:
 			logger.Printf("Unknown message type: %d", msgType)

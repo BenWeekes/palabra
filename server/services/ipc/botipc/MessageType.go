@@ -7,27 +7,30 @@ import "strconv"
 type MessageType int8
 
 const (
-	MessageTypeSTART_SESSION  MessageType = 0
-	MessageTypeSTOP_SESSION   MessageType = 1
-	MessageTypeSTATUS_UPDATE  MessageType = 10
-	MessageTypeLOG_MESSAGE    MessageType = 11
-	MessageTypeERROR_RESPONSE MessageType = 12
+	MessageTypeSTART_SESSION       MessageType = 0
+	MessageTypeSTOP_SESSION        MessageType = 1
+	MessageTypeSWITCH_AUDIO_SOURCE MessageType = 2
+	MessageTypeSTATUS_UPDATE       MessageType = 10
+	MessageTypeLOG_MESSAGE         MessageType = 11
+	MessageTypeERROR_RESPONSE      MessageType = 12
 )
 
 var EnumNamesMessageType = map[MessageType]string{
-	MessageTypeSTART_SESSION:  "START_SESSION",
-	MessageTypeSTOP_SESSION:   "STOP_SESSION",
-	MessageTypeSTATUS_UPDATE:  "STATUS_UPDATE",
-	MessageTypeLOG_MESSAGE:    "LOG_MESSAGE",
-	MessageTypeERROR_RESPONSE: "ERROR_RESPONSE",
+	MessageTypeSTART_SESSION:       "START_SESSION",
+	MessageTypeSTOP_SESSION:        "STOP_SESSION",
+	MessageTypeSWITCH_AUDIO_SOURCE: "SWITCH_AUDIO_SOURCE",
+	MessageTypeSTATUS_UPDATE:       "STATUS_UPDATE",
+	MessageTypeLOG_MESSAGE:         "LOG_MESSAGE",
+	MessageTypeERROR_RESPONSE:      "ERROR_RESPONSE",
 }
 
 var EnumValuesMessageType = map[string]MessageType{
-	"START_SESSION":  MessageTypeSTART_SESSION,
-	"STOP_SESSION":   MessageTypeSTOP_SESSION,
-	"STATUS_UPDATE":  MessageTypeSTATUS_UPDATE,
-	"LOG_MESSAGE":    MessageTypeLOG_MESSAGE,
-	"ERROR_RESPONSE": MessageTypeERROR_RESPONSE,
+	"START_SESSION":       MessageTypeSTART_SESSION,
+	"STOP_SESSION":        MessageTypeSTOP_SESSION,
+	"SWITCH_AUDIO_SOURCE": MessageTypeSWITCH_AUDIO_SOURCE,
+	"STATUS_UPDATE":       MessageTypeSTATUS_UPDATE,
+	"LOG_MESSAGE":         MessageTypeLOG_MESSAGE,
+	"ERROR_RESPONSE":      MessageTypeERROR_RESPONSE,
 }
 
 func (v MessageType) String() string {

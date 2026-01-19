@@ -157,6 +157,23 @@ func BuildStopSessionMessage(taskID, reason string) []byte {
 	return buildIPCMessage(botipc.MessageTypeSTOP_SESSION, payloadBytes)
 }
 
+// BuildSwitchAudioSourceMessage creates a SWITCH_AUDIO_SOURCE message
+func BuildSwitchAudioSourceMessage(taskID string, newUID uint32, isTranslation bool) []byte {
+	innerBuilder := flatbuffers.NewBuilder(256)
+
+	taskIDOffset := innerBuilder.CreateString(taskID)
+
+	botipc.SwitchAudioSourcePayloadStart(innerBuilder)
+	botipc.SwitchAudioSourcePayloadAddTaskId(innerBuilder, taskIDOffset)
+	botipc.SwitchAudioSourcePayloadAddNewUid(innerBuilder, newUID)
+	botipc.SwitchAudioSourcePayloadAddIsTranslation(innerBuilder, isTranslation)
+	payloadOffset := botipc.SwitchAudioSourcePayloadEnd(innerBuilder)
+	innerBuilder.Finish(payloadOffset)
+	payloadBytes := innerBuilder.FinishedBytes()
+
+	return buildIPCMessage(botipc.MessageTypeSWITCH_AUDIO_SOURCE, payloadBytes)
+}
+
 // BuildStatusMessage creates a STATUS_UPDATE message
 func BuildStatusMessage(taskID string, status botipc.SessionStatus, message string, anamUID uint32) []byte {
 	innerBuilder := flatbuffers.NewBuilder(256)
@@ -271,4 +288,9 @@ func ParseLogPayload(data []byte) *botipc.LogPayload {
 // ParseErrorPayload parses an ErrorPayload from bytes
 func ParseErrorPayload(data []byte) *botipc.ErrorPayload {
 	return botipc.GetRootAsErrorPayload(data, 0)
+}
+
+// ParseSwitchAudioSourcePayload parses a SwitchAudioSourcePayload from bytes
+func ParseSwitchAudioSourcePayload(data []byte) *botipc.SwitchAudioSourcePayload {
+	return botipc.GetRootAsSwitchAudioSourcePayload(data, 0)
 }
