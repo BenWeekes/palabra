@@ -1,0 +1,19 @@
+# App Builder source (cloned separately, not committed)
+app-builder/
+
+# Build outputs
+*.log
+node_modules/
+
+# Environment files with secrets
+server/.env
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

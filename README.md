@@ -12,14 +12,18 @@ palabra/                      # This repo (customizations + backend)
 │   ├── customization/palabra/  # Translation UI components
 │   └── config.json            # Frontend config
 ├── server/                   # Go backend (buildable with Docker)
-└── docs/                     # Documentation
-
-palabra-client-full/          # Separate: Full Agora App Builder (has package.json)
-├── template/                 # App Builder source
-│   ├── customization/palabra/  # ← Copy from palabra/client/customization/
-│   └── ...
-└── Builds/web/              # Build output → deploy to /var/www/palabra/
+├── docs/                     # Documentation
+├── scripts/                  # Helper scripts
+│   ├── setup-frontend.sh     # Clone App Builder & setup
+│   └── build-frontend.sh     # Sync files & build
+└── app-builder/              # GITIGNORED - App Builder cloned here
+    ├── template/             # App Builder source
+    │   ├── customization/palabra/  # ← Copied from client/customization/
+    │   └── ...
+    └── Builds/web/           # Build output → deploy to /var/www/palabra/
 ```
+
+**Note**: The `app-builder/` directory is gitignored. You need to clone/copy Agora App Builder there separately.
 
 ## Quick Start (Development)
 
@@ -42,27 +46,43 @@ The Docker build creates two binaries:
 
 ### Frontend
 
-The `client/` directory contains **customization files only**. To build the frontend:
+The `client/` directory contains **customization files only**. App Builder source is needed to build.
 
+**First-time setup:**
 ```bash
-# 1. Copy customization files to App Builder
-cp -r palabra/client/customization/palabra/* palabra-client-full/template/customization/palabra/
+# 1. Run setup script (clones App Builder into app-builder/)
+./scripts/setup-frontend.sh
 
-# 2. Build from App Builder directory
-cd palabra-client-full/template
-npm install      # First time only
-npm run web:build
+# 2. Edit config.json with your domain
+nano app-builder/template/config.json
+# Update BACKEND_ENDPOINT and PALABRA_BACKEND_ENDPOINT
+```
 
-# 3. Deploy (production)
-sudo cp -r ../Builds/web/* /var/www/palabra/
+**Build and deploy:**
+```bash
+# Sync customization files and build
+./scripts/build-frontend.sh
+
+# Deploy to web server
+sudo cp -r app-builder/Builds/web/* /var/www/palabra/
 sudo chown -R www-data:www-data /var/www/palabra/
 ```
 
-For development with hot reload:
+**Development with hot reload:**
 ```bash
-cd palabra-client-full/template
+cd app-builder
 npm run web
 # Runs at http://localhost:9000
+```
+
+**Manual setup** (if you already have App Builder elsewhere):
+```bash
+# Copy customization files
+cp -r client/customization/palabra/* /path/to/app-builder/template/customization/palabra/
+cp client/config.json /path/to/app-builder/template/config.json
+
+# Build
+cd /path/to/app-builder && npm run web-build
 ```
 
 ## Production Deployment (Ubuntu Linux)
