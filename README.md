@@ -120,6 +120,9 @@ cd app-builder
 cp -r ../client/customization/palabra template/customization/
 cp ../client/customization/index.tsx template/customization/
 
+# Apply patch to filter translation UIDs from video tiles (REQUIRED)
+cp ../client/app-builder-patches/VideoComponent.tsx template/src/pages/video-call/
+
 # Copy config files
 cp config.json template/config.json
 cp theme.json template/theme.json
@@ -274,6 +277,7 @@ sudo docker compose up -d --build
 cd ../app-builder
 cp -r ../client/customization/palabra template/customization/
 cp ../client/customization/index.tsx template/customization/
+cp ../client/app-builder-patches/VideoComponent.tsx template/src/pages/video-call/
 npm run web-build
 sudo cp -r Builds/web/* /var/www/palabra/
 ```
