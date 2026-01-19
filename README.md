@@ -1,669 +1,324 @@
-# Palabra + Anam Integration for Agora App Builder
+# Palabra - Real-Time Translation for Agora Video Conferencing
 
-Real-time speech translation with optional lip-synced avatar for Agora video conferencing.
+Real-time speech translation with optional lip-synced avatar integration for Agora App Builder.
+
+## Features
+
+- **Translate Audio** - Real-time speech translation to 9+ languages
+- **Avatar Mode** - Lip-synced avatar speaks the translated audio
+- **Persistent Avatar** - Avatar can run independently, switching between original and translated audio
 
 ## Repository Structure
 
-This repo contains **customization files** that overlay onto Agora App Builder:
+This repository contains **customization files** that overlay onto [Agora App Builder](https://github.com/AgoraIO-Community/app-builder-core):
 
 ```
-palabra/                      # This repo (customizations + backend)
-├── client/                   # Frontend customization files (NOT buildable standalone)
-│   ├── customization/palabra/  # Translation UI components
-│   └── config.json            # Frontend config
-├── server/                   # Go backend (buildable with Docker)
-├── docs/                     # Documentation
-├── scripts/                  # Helper scripts
-│   ├── setup-frontend.sh     # Clone App Builder & setup
-│   └── build-frontend.sh     # Sync files & build
-└── app-builder/              # GITIGNORED - App Builder cloned here
-    ├── template/             # App Builder source
-    │   ├── customization/palabra/  # ← Copied from client/customization/
-    │   └── ...
-    └── Builds/web/           # Build output → deploy to /var/www/palabra/
+palabra/
+├── client/                          # Frontend customization (overlay files)
+│   └── customization/
+│       ├── index.tsx                # Entry point - wraps VideoCall with TranslationProvider
+│       └── palabra/
+│           ├── TranslationProvider.tsx   # Core translation/avatar logic
+│           └── TranslationMenuItem.tsx   # Menu UI components
+├── server/                          # Go backend (runs in Docker)
+├── docs/                            # Documentation
+└── app-builder/                     # GITIGNORED - App Builder cloned here at build time
 ```
 
-**Note**: The `app-builder/` directory is gitignored. You need to clone/copy Agora App Builder there separately.
+**How customization works:**
 
-## Quick Start (Development)
+1. Agora App Builder is a standalone video conferencing app
+2. App Builder supports a `customization/` folder for extending functionality
+3. This repo provides customization files that add Palabra translation features
+4. At build time, files from `client/customization/` are copied into App Builder's `template/customization/`
+5. The `index.tsx` entry point wraps the VideoCall component with `TranslationProvider`
 
-### Backend
-```bash
-cd server
+**App Builder source:** https://github.com/AgoraIO-Community/app-builder-core
 
-# Copy and configure environment
-cp .env.example .env
-# Edit .env with your Agora/Palabra/Anam credentials
-
-# Build and run (builds both server and bot_worker binaries)
-docker compose up --build
-# Runs at http://localhost:7081 (external) → 8080 (container internal)
-```
-
-The Docker build creates two binaries:
-- `server` - Main HTTP server (parent process)
-- `bot_worker` - Agora SDK runner (child process, crash-isolated)
-
-### Frontend
-
-The `client/` directory contains **customization files only**. App Builder source is needed to build.
-
-**First-time setup:**
-```bash
-# 1. Run setup script (clones App Builder into app-builder/)
-./scripts/setup-frontend.sh
-
-# 2. Edit config.json with your domain
-nano app-builder/template/config.json
-# Update BACKEND_ENDPOINT and PALABRA_BACKEND_ENDPOINT
-```
-
-**Build and deploy:**
-```bash
-# Sync customization files and build
-./scripts/build-frontend.sh
-
-# Deploy to web server
-sudo cp -r app-builder/Builds/web/* /var/www/palabra/
-sudo chown -R www-data:www-data /var/www/palabra/
-```
-
-**Development with hot reload:**
-```bash
-cd app-builder
-npm run web
-# Runs at http://localhost:9000
-```
-
-**Manual setup** (if you already have App Builder elsewhere):
-```bash
-# Copy customization files
-cp -r client/customization/palabra/* /path/to/app-builder/template/customization/palabra/
-cp client/config.json /path/to/app-builder/template/config.json
-
-# Build
-cd /path/to/app-builder && npm run web-build
-```
-
-## Production Deployment (Ubuntu Linux)
+## Quick Start
 
 ### Prerequisites
 
-```bash
-# Update system
-sudo apt update && sudo apt upgrade -y
-
-# Install Docker
-sudo apt install -y docker.io docker-compose
-
-# Install Node.js 18+ and npm
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-sudo apt install -y nodejs
-
-# Install Nginx
-sudo apt install -y nginx
-
-# Install Certbot (for SSL)
-sudo apt install -y certbot python3-certbot-nginx
-```
+- Ubuntu 20.04+ (x86-64 architecture required)
+- Docker and Docker Compose
+- Node.js 18+
+- Nginx
+- Domain name with SSL certificate
 
 ### 1. Clone Repository
 
 ```bash
-cd /opt
-sudo git clone https://github.com/BenWeekes/palabra.git
+cd /home/ubuntu
+git clone https://github.com/BenWeekes/palabra.git
 cd palabra
 ```
 
-### 2. Setup Backend
+### 2. Configure Backend
 
 ```bash
 cd server
-
-# Create .env file with your credentials
-sudo nano .env
+cp .env.example .env
+nano .env
 ```
 
-**Required .env configuration:**
+**Required `.env` settings:**
+
 ```bash
-# Agora credentials
-APP_ID=your_agora_app_id
-APP_CERTIFICATE=your_agora_certificate
-CUSTOMER_ID=your_customer_id
-CUSTOMER_CERTIFICATE=your_customer_certificate
+# Agora Credentials
+APP_ID=<your_agora_app_id>
+APP_CERTIFICATE=<your_agora_certificate>
+CUSTOMER_ID=<your_customer_id>
+CUSTOMER_CERTIFICATE=<your_customer_certificate>
 
-# Palabra credentials
-PALABRA_CLIENT_ID=your_palabra_client_id
-PALABRA_CLIENT_SECRET=your_palabra_client_secret
-
-# Server configuration
-PORT=8080
-SCHEME=https
-ALLOWED_ORIGIN=https://yourdomain.com
+# Palabra Credentials
+PALABRA_CLIENT_ID=<your_palabra_client_id>
+PALABRA_CLIENT_SECRET=<your_palabra_client_secret>
 
 # Database
 POSTGRES_USER=appbuilder
-POSTGRES_PASSWORD=strong_password_here
+POSTGRES_PASSWORD=<strong_password>
 POSTGRES_DB=appbuilder
-DATABASE_URL=postgresql://appbuilder:strong_password_here@postgres:5432/appbuilder?sslmode=disable
 
-# Translation mode
-ENABLE_ANAM=false  # Set true for avatar mode
+# Server Configuration
+PORT=8080
+SCHEME=https
+ALLOWED_ORIGIN=https://yourdomain.com:7000
 
-# Session protection (prevents runaway credit usage)
-PALABRA_SESSION_TIMEOUT_MINUTES=10  # Max session duration
-PALABRA_IDLE_TIMEOUT_SECONDS=60     # Stop after silence
-
-# Anam credentials (only if ENABLE_ANAM=true)
-ANAM_API_KEY=your_base64_key
+# Avatar Mode (set to true to enable Anam avatar)
+ENABLE_ANAM=true
+ANAM_API_KEY=<your_anam_api_key>
 ANAM_BASE_URL=https://api.anam.ai/v1
-ANAM_AVATAR_ID=your_avatar_uuid
+ANAM_AVATAR_ID=<your_anam_avatar_id>
 ANAM_QUALITY=high
 ANAM_VIDEO_ENCODING=H264
+
+# Session Protection
+PALABRA_SESSION_TIMEOUT_MINUTES=10
+PALABRA_IDLE_TIMEOUT_SECONDS=60
 ```
 
 **Start backend:**
+
 ```bash
 sudo docker compose up -d --build
 
-# Check logs
-sudo docker compose logs -f
+# Verify it's running
+curl http://localhost:7080/v1/palabra/tasks
+# Should return: {"success":true,"tasks":[]}
 ```
 
-### 3. Setup Frontend
+### 3. Build Frontend
 
 ```bash
-cd /opt/palabra/client
+cd /home/ubuntu/palabra
 
-# Update backend endpoint
-sudo nano customization/config.json
+# Clone Agora App Builder
+git clone https://github.com/AgoraIO-Community/app-builder-core.git app-builder
+cd app-builder
+
+# Copy customization files
+cp -r ../client/customization/palabra template/customization/
+cp ../client/customization/index.tsx template/customization/
+
+# Copy config files
+cp config.json template/config.json
+cp theme.json template/theme.json
+
+# Update config.json with your domain
+nano template/config.json
 ```
 
-**Update config.json (same-origin setup):**
+**Update these values in `template/config.json`:**
+
 ```json
 {
+  "APP_ID": "<your_agora_app_id>",
   "FRONTEND_ENDPOINT": "https://yourdomain.com:7000",
   "BACKEND_ENDPOINT": "https://yourdomain.com:7000",
   "PALABRA_BACKEND_ENDPOINT": "https://yourdomain.com:7000"
 }
 ```
 
-**Build production frontend:**
-```bash
-npm install
-npm run build
+**Build:**
 
-# Copy build to web server directory
+```bash
+# Install UI Kit
+npm run uikit
+
+# Install dependencies
+cd template
+npm install --legacy-peer-deps
+cd ..
+
+# Build for production
+npm run web-build
+```
+
+### 4. Deploy Frontend
+
+```bash
 sudo mkdir -p /var/www/palabra
-sudo cp -r dist/* /var/www/palabra/
+sudo cp -r Builds/web/* /var/www/palabra/
 sudo chown -R www-data:www-data /var/www/palabra
 ```
 
-### 4. Configure Nginx
+### 5. Configure Nginx
 
 ```bash
 sudo nano /etc/nginx/sites-available/palabra
 ```
 
-**Nginx configuration (Same-Origin Setup - Recommended):**
-
-This configuration serves both frontend and API from the same origin (port 7000), eliminating CORS issues:
-
 ```nginx
-# Palabra Frontend + Backend API - Port 7000 (same-origin)
 server {
-    listen [::]:7000 ssl ipv6only=on;
     listen 7000 ssl;
+    listen [::]:7000 ssl;
+
     ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
-    include /etc/letsencrypt/options-ssl-nginx.conf;
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
-    # API requests - proxy to backend (same-origin, no CORS)
+    # API proxy to backend
     location /v1/ {
-        proxy_pass http://localhost:7081/v1/;
+        proxy_pass http://localhost:7080/v1/;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 300s;
-        proxy_connect_timeout 75s;
     }
 
-    # Static files - serve frontend build
+    location /query {
+        proxy_pass http://localhost:7080/query;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # Frontend static files
     location / {
         root /var/www/palabra;
         index index.html;
         try_files $uri $uri/ /index.html;
     }
 
-    # Cache static assets
     location ~* \.(js|css|png|jpg|jpeg|gif|ico|wasm|mp4|ttf)$ {
         root /var/www/palabra;
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
-
-    client_max_body_size 10M;
-}
-
-# Backend direct access - Port 7080 (optional, for debugging)
-server {
-    listen [::]:7080 ssl ipv6only=on;
-    listen 7080 ssl;
-    ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
-    include /etc/letsencrypt/options-ssl-nginx.conf;
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
-
-    location / {
-        proxy_pass http://localhost:7081;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        # WebSocket support
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-
-        proxy_read_timeout 300s;
-        proxy_connect_timeout 75s;
-    }
-
-    client_max_body_size 10M;
 }
 ```
-
-**Key Points:**
-- Port 7000: Frontend + API (same-origin, no CORS)
-- Port 7080: Direct backend access (for debugging/testing)
-- Port 7081: Backend Docker container (internal)
-- All API requests use `/v1/` prefix and are proxied to backend
 
 **Enable site:**
+
 ```bash
 sudo ln -s /etc/nginx/sites-available/palabra /etc/nginx/sites-enabled/
-sudo nginx -t  # Test configuration
-sudo systemctl restart nginx
+sudo nginx -t
+sudo systemctl reload nginx
 ```
 
-### 5. Setup SSL (Let's Encrypt)
+### 6. Get SSL Certificate
 
 ```bash
-# Get SSL certificate (interactive - follow prompts)
 sudo certbot --nginx -d yourdomain.com
-
-# Verify auto-renewal is enabled
-sudo systemctl status certbot.timer
-
-# Test renewal (dry run)
-sudo certbot renew --dry-run
 ```
 
-### 6. Firewall Configuration
+### 7. Verify Deployment
 
 ```bash
-# Allow HTTP, HTTPS, and SSH
-sudo ufw allow 22/tcp
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
-sudo ufw enable
+# Test backend API
+curl https://yourdomain.com:7000/v1/palabra/tasks
+
+# Test avatar endpoints
+curl -X POST https://yourdomain.com:7000/v1/avatar/start \
+  -H "Content-Type: application/json" \
+  -d '{"channel":"test","sourceUid":"123"}'
 ```
 
-### 7. Start on Boot
+## Usage
+
+1. Join a video call with 2+ participants
+2. Click the **3-dot menu** on a remote participant's video
+3. Select **"Start Avatar"** to show lip-synced avatar
+4. Select **"Translate Audio"** and choose target language
+5. Avatar will speak the translated audio
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/palabra/start` | POST | Start translation for a user |
+| `/v1/palabra/stop` | POST | Stop translation |
+| `/v1/palabra/tasks` | GET | List active translation tasks |
+| `/v1/avatar/start` | POST | Start persistent avatar |
+| `/v1/avatar/stop` | POST | Stop persistent avatar |
+
+## Operating Modes
+
+| Mode | Config | Description |
+|------|--------|-------------|
+| Audio-Only | `ENABLE_ANAM=false` | Translation audio only (UID 3000) |
+| Avatar | `ENABLE_ANAM=true` | Lip-synced avatar video+audio (UID 4000) |
+
+## Updating
 
 ```bash
-# Docker containers already restart automatically (check docker-compose.yml)
-# Nginx starts on boot by default
+cd /home/ubuntu/palabra
+git pull
 
-# Verify services
-sudo systemctl enable nginx
-sudo systemctl enable docker
-
-# Check status
-sudo systemctl status nginx
-sudo systemctl status docker
-```
-
-### 8. Verify Deployment
-
-```bash
-# Check backend is running (internal port)
-curl http://localhost:7081/health  # Should return 200 OK
-
-# Check frontend files
-ls -la /var/www/palabra
-
-# Check combined frontend + API (same-origin)
-curl -k https://localhost:7000/           # Frontend - should return HTML
-curl -k https://localhost:7000/v1/health  # API via proxy - should return OK
-
-# Check direct backend access (optional debug port)
-curl -k https://localhost:7080/health     # Should return OK
-
-# Monitor logs
-sudo docker compose logs -f  # Backend logs
-sudo tail -f /var/log/nginx/access.log  # Nginx access logs
-sudo tail -f /var/log/nginx/error.log   # Nginx error logs
-```
-
-## Updating Production
-
-```bash
-cd /opt/palabra
-
-# Pull latest changes
-sudo git pull
-
-# Update backend
+# Rebuild backend
 cd server
 sudo docker compose down
 sudo docker compose up -d --build
 
-# Update frontend
-cd ../client
-npm install
-npm run build
-sudo cp -r dist/* /var/www/palabra/
-
-# Reload Nginx (zero downtime)
-sudo nginx -s reload
+# Rebuild frontend
+cd ../app-builder
+cp -r ../client/customization/palabra template/customization/
+cp ../client/customization/index.tsx template/customization/
+npm run web-build
+sudo cp -r Builds/web/* /var/www/palabra/
 ```
-
-## System Requirements
-
-**Minimum:**
-- Ubuntu 20.04+ (x86-64 architecture)
-- 2 CPU cores
-- 4GB RAM
-- 20GB storage
-- Public IP with domain name
-
-**Recommended:**
-- Ubuntu 22.04 LTS (x86-64)
-- 4 CPU cores
-- 8GB RAM
-- 50GB SSD storage
-- CDN for frontend (optional)
-
-**Important**: Server must be x86-64 architecture (not ARM) due to Agora SDK binary requirements.
-
-### Agora SDK Requirements (Avatar Mode)
-
-For avatar mode (`ENABLE_ANAM=true`), the backend requires Agora RTC Server SDK native libraries:
-
-**What's included in the repository:**
-- `server/vendor_sdk/` - Go SDK wrapper (253MB)
-  - `go_sdk/rtc/` - Go bindings for Agora RTC
-  - `agora_sdk/` - Native SDK v4.4.32 (headers + libraries)
-  - Used by `go.mod` replace directive
-
-- `server/agora_sdk/` - Native SDK with macOS binaries (243MB)
-  - Headers: `include/c/api2/` and `include/c/base/`
-  - Libraries: `libagora_rtc_sdk.so` (Linux) and `.dylib` (macOS)
-  - Platform: Linux x86-64 for production, macOS for local dev
-
-**Why two SDK directories?**
-- `vendor_sdk` = Go SDK module (imports native SDK internally)
-- `agora_sdk` = Native SDK used by CGO during build and at runtime
-
-**Build requirements:**
-- Docker with CGO enabled (configured in Dockerfile)
-- Build platform must be `linux/amd64`
-
-**The Dockerfile handles:**
-1. Copy `vendor_sdk/` for Go module resolution
-2. Copy `agora_sdk/` for CGO compilation (headers) and runtime (libraries)
-3. Set CGO flags to find headers and link libraries
-4. Copy `.so` files to runtime container
-5. Set `LD_LIBRARY_PATH` for runtime
-
-**No manual SDK installation needed** - everything is included in the repo and handled by Docker.
-
-## Three Operating Modes
-
-### Audio-Only Mode (ENABLE_ANAM=false)
-- Palabra translates speech → Client receives audio stream (UID 3000)
-- User sees original video, hears translated audio
-- Cost-effective translation
-
-### Avatar Mode (ENABLE_ANAM=true)
-- Palabra translates → Bot forwards to Anam → Lip-synced avatar (UID 4000)
-- User sees/hears French-speaking avatar in original user's tile
-- Premium experience with video
-
-### Persistent Avatar Mode (ENABLE_ANAM=true + Start Avatar)
-- Avatar is always visible, lip-syncing to the speaker's ORIGINAL audio
-- When translation is enabled, avatar seamlessly switches to translated audio
-- When translation is stopped, avatar switches back to original audio (avatar persists)
-- Provides continuous avatar experience independent of translation state
-
-**User Flow (Persistent Avatar):**
-1. Click on remote user → "Start Avatar" → Avatar appears (original audio)
-2. Click "Translate Audio" → Avatar switches to translated audio
-3. Click "Stop Translation" → Avatar continues with original audio
-4. Click "Stop Avatar" → Avatar removed, original video restored
-
-**Technical Implementation:**
-
-| Action | Frontend | Backend | Bot Process |
-|--------|----------|---------|-------------|
-| Start Avatar | Calls `/v1/avatar/start`, stores `anamUid` | Creates bot subscribing to source user | Subscribes to original audio, forwards to Anam |
-| Start Translation | Calls `/v1/palabra/start`, detects existing avatar | Returns same `anamUid`, sends `SWITCH_AUDIO_SOURCE` | Unsubscribes from source, subscribes to Palabra UID |
-| Stop Translation | Keeps avatar subscription, clears translation state | Sends `SWITCH_AUDIO_SOURCE` back to source | Unsubscribes from Palabra, subscribes to source |
-| Stop Avatar | Unsubscribes from avatar, restores original | Stops bot process, cleans up sessions | Process terminates |
-
-**New API Endpoints:**
-```
-POST /v1/avatar/start
-  Request:  { channel: string, sourceUid: string }
-  Response: { success: bool, anamUid: number, sessionId: string }
-
-POST /v1/avatar/stop
-  Request:  { channel: string, sourceUid: string }
-  Response: { success: bool }
-```
-
-**IPC Message (Parent → Child):**
-```
-SWITCH_AUDIO_SOURCE { task_id, new_uid, is_translation }
-```
-
-**Switch modes**: Change `ENABLE_ANAM` in backend `.env` and restart
-
-## Documentation
-
-📖 **[app-builder-dev.md](docs/app-builder-dev.md)** - Development setup, build, deploy, debug
-
-📖 **[palabra-integrate.md](docs/palabra-integrate.md)** - Palabra integration (both modes)
-
-📖 **[anam-integrate.md](docs/anam-integrate.md)** - Anam avatar integration (WebSocket, bot)
-
-📖 **[palabra-architecture.md](docs/palabra-architecture.md)** - Backend process architecture (crash isolation)
-
-## Architecture
-
-### Backend Process Model
-
-The backend uses a **parent/child process architecture** for crash isolation:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    PARENT PROCESS (HTTP Server)              │
-│  - Handles API requests (/v1/palabra/start, /stop)          │
-│  - Spawns isolated child processes for each session         │
-│  - Survives child crashes (no 502 errors)                   │
-│                                                              │
-│  Built binary: /go/bin/server                               │
-└─────────────────────────────────────────────────────────────┘
-         │ stdin/stdout (FlatBuffers IPC)
-         ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    CHILD PROCESS (bot_worker)                │
-│  - Runs Agora SDK (can crash with segfaults)                │
-│  - Connects to Anam WebSocket                               │
-│  - Forwards audio from Palabra to Anam                      │
-│  - Auto-stops on: timeout, idle, or target-left             │
-│                                                              │
-│  Built binary: /go/bin/bot_worker                           │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Why this design?** The Agora Go SDK wraps native C code that can crash with segfaults. Go's `recover()` cannot catch these. By isolating the SDK in a child process, crashes only affect that session - the HTTP server stays up.
-
-See [palabra-architecture.md](docs/palabra-architecture.md) for full details.
-
-### UID Ranges
-
-| Range | Purpose | Auto-Subscribe |
-|-------|---------|----------------|
-| 1-2999 | Normal users | ✅ Yes |
-| 3000-3999 | Palabra audio-only | ❌ No |
-| 4000-4999 | Anam avatar | ❌ No |
-| 5000+ | Backend bot | ❌ No |
-
-### Key Features
-
-✅ **Monkey-patch subscription** - Blocks auto-subscribe for UIDs 3000-4999 (privacy)
-
-✅ **Mode auto-detection** - Client detects from UID range (no config needed)
-
-✅ **Video replacement** - Avatar plays in source user's tile (seamless UX)
-
-✅ **16:9 aspect ratio fix** - Anam avatar (4:3) displayed in 16:9 container with `cover` fit to match other video tiles. See `playVideoIn16x9Container()` in TranslationProvider.tsx.
-
-✅ **Late-arrival handling** - Handles race conditions (UID publishes before API response)
-
-✅ **Session protection** - Three-layer safeguard against runaway sessions:
-  - Session timeout (default 10 min) - max duration
-  - Idle detection (default 60s) - stops if no audio activity
-  - Target-left detection - stops immediately if Palabra bot leaves channel
-
-✅ **Persistent Avatar Mode** - Avatar can be started independently from translation:
-  - `/v1/avatar/start` - Start avatar (subscribes to original audio)
-  - `/v1/avatar/stop` - Stop avatar
-  - Dynamic audio source switching via IPC when translation starts/stops
-
-## Configuration
-
-### Backend (.env)
-```bash
-# Mode selection
-ENABLE_ANAM=false    # Set true for avatar mode
-
-# Palabra credentials (required)
-PALABRA_CLIENT_ID=your_id
-PALABRA_CLIENT_SECRET=your_secret
-
-# Anam credentials (only if ENABLE_ANAM=true)
-ANAM_API_KEY=base64_key
-ANAM_AVATAR_ID=uuid
-
-# Agora credentials
-APP_ID=your_app_id
-APP_CERTIFICATE=your_certificate
-```
-
-### Frontend (config.json)
-```json
-{
-  "FRONTEND_ENDPOINT": "https://yourdomain.com:7000",
-  "BACKEND_ENDPOINT": "https://yourdomain.com:7000",
-  "PALABRA_BACKEND_ENDPOINT": "https://yourdomain.com:7000"
-}
-```
-
-**Same-Origin API Routing**: In production, all endpoints use the same origin (port 7000). Nginx proxies `/v1/*` requests to the backend (port 7081), eliminating CORS issues.
-
-**Port Note**: Development backend runs on port **7080** (not 8080/8081) to avoid conflicts with other services. For production with Nginx, use port 7000 for everything.
-
-## Testing
-
-### Expected Logs (Audio-Only)
-```
-[Palabra] ✓ Playing translation audio from UID 3000
-```
-
-### Expected Logs (Avatar)
-```
-[Palabra] ✓ Playing Anam avatar audio from UID 4000
-[Palabra] ✓ Anam avatar video now playing in tile for UID 100
-[Anam] Connected to Anam WebSocket
-[AgoraBot] Connected to channel as UID 5000
-```
-
-## File Structure
-
-```
-app-builder-backend/
-├── services/
-│   ├── palabra.go          # Translation integration + mode switch
-│   ├── anam_client.go      # WebSocket client (avatar mode)
-│   └── agora_bot.go        # Audio forwarder (avatar mode)
-└── .env                    # Configuration (ENABLE_ANAM flag)
-
-app-builder-core/template/
-└── customization/palabra/
-    └── TranslationProvider.tsx   # Subscription logic, video replacement
-```
-
-## Key Code Changes
-
-**Backend** (services/palabra.go):
-- When `ENABLE_ANAM=true`: Creates bot (UID 5000) + Anam session, returns UID 4000
-- When `ENABLE_ANAM=false`: Returns UID 3000 (Palabra audio-only)
-- `/v1/avatar/start`: Starts persistent avatar (bot subscribes to source user's original audio)
-- `/v1/avatar/stop`: Stops persistent avatar
-- `AvatarSession` struct tracks persistent avatars independently from translations
-- `PalabraStart`: Detects existing avatar and switches audio source instead of creating new bot
-- `PalabraStop`: Preserves avatar if started independently (switches back to original audio)
-
-**Backend** (services/bot_process_manager.go):
-- `SwitchAudioSource()`: Sends SWITCH_AUDIO_SOURCE IPC message to running bot process
-
-**Backend** (services/ipc/):
-- `SWITCH_AUDIO_SOURCE` message type for dynamic audio source switching
-- `SwitchAudioSourcePayload` contains new_uid and is_translation flag
-
-**Frontend** (TranslationProvider.tsx):
-- Monkey-patch `client.subscribe()` to filter UIDs 3000-4999
-- Explicit subscription on `user-published` event
-- Late-arrival handling for race conditions
-- `activeAvatars` state tracks persistent avatar sessions
-- `startAvatar()` / `stopAvatar()` for persistent avatar control
-- Updated `handleUserPublished` to handle both translation and avatar UIDs
-
-**Frontend** (TranslationMenuItem.tsx):
-- "Start Avatar" / "Stop Avatar" menu items
-- "Translate Audio" / "Stop Translation" menu items
-- Hint shown when avatar is active and selecting translation language
 
 ## Troubleshooting
 
-### No Translation Audio
-- Check backend logs: `docker logs server -f | grep Palabra`
-- Verify `PALABRA_BACKEND_ENDPOINT` in config.json
-- Check browser console for subscription errors
+**Backend not responding:**
+```bash
+sudo docker logs server --tail 50
+```
 
-### No Avatar Video (ENABLE_ANAM=true)
-- Check backend logs: `docker logs server -f | grep Anam`
-- Verify Anam credentials in .env
-- Check bot joined: `docker logs server | grep "Bot.*connected"`
+**Avatar 401 Unauthorized:**
+- Verify `ANAM_API_KEY` in `.env` is correct
+- Recreate container after .env changes: `sudo docker compose down && sudo docker compose up -d`
 
-### Token Errors (Error Code 5)
-- Ensure APP_ID matches in backend .env and frontend config.json
-- Restart both backend and frontend after .env changes
+**Frontend not loading customization:**
+- Ensure `template/customization/index.tsx` exists
+- Rebuild: `npm run web-build`
 
-## References
+**CORS errors:**
+- Verify `ALLOWED_ORIGIN` in `.env` matches your domain
+- Use same-origin setup (frontend and API on same port via nginx)
 
-- **Agora SDK**: https://docs.agora.io/en/video-calling/
-- **App Builder**: https://appbuilder-docs.agora.io/
-- **Palabra API**: Contact Palabra team for documentation
-- **Anam API**: Contact Anam team for documentation
+## Architecture
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│   Browser       │────▶│   Nginx :7000    │────▶│  Backend :7080  │
+│   (Frontend)    │     │   (SSL + Proxy)  │     │  (Docker)       │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+                                                          │
+                                                          ▼
+                                                 ┌─────────────────┐
+                                                 │   Palabra API   │
+                                                 │   Anam API      │
+                                                 │   Agora RTC     │
+                                                 └─────────────────┘
+```
+
+## Documentation
+
+- [palabra-integrate.md](docs/palabra-integrate.md) - Detailed integration guide
+- [anam-integrate.md](docs/anam-integrate.md) - Anam avatar setup
+- [app-builder-dev.md](docs/app-builder-dev.md) - Development guide
 
 ## License
 
-Copyright © 2021 Agora Lab, Inc. See individual files for license details.
+Copyright © 2021 Agora Lab, Inc.

@@ -55,7 +55,7 @@ cd /Users/benweekes/work/palabra/app-builder-backend
 # Build with Docker
 docker compose down && docker compose up -d --build
 
-# Runs at http://localhost:8081
+# Runs at http://localhost:7080
 ```
 
 ### Frontend
@@ -94,7 +94,7 @@ APP_CERTIFICATE=1508f5aab7e14f5e91e26e1921084563
 
 ```json
 {
-  "PALABRA_BACKEND_ENDPOINT": "http://localhost:8081"
+  "PALABRA_BACKEND_ENDPOINT": "http://localhost:7080"
 }
 ```
 
