@@ -9,17 +9,21 @@ import (
 	agoraservice "github.com/AgoraIO-Extensions/Agora-Golang-Server-SDK/v2/go_sdk/rtc"
 )
 
-// AgoraBot subscribes to Palabra audio (UID 3000) and forwards to Anam WebSocket
+// AgoraBot subscribes to audio and forwards to Anam WebSocket
+// Supports dual-subscription: always subscribed to primary (original user),
+// optionally subscribed to translation (Palabra) with priority when active
 type AgoraBot struct {
 	appID         string
 	channel       string
 	botUID        string // UID 4000+ (Anam avatar)
 	token         string
-	targetUID     string // UID 3000+ (Palabra audio to subscribe to)
+	primaryUID    string // Original user UID - always subscribed, never unsubscribe
+	translationUID string // Palabra UID when translation active, empty otherwise
+	translationActive bool // True when we've received audio from translationUID
 	anamClient    *AnamClient
 	conn          *agoraservice.RtcConnection
 	stopChan      chan struct{}
-	targetLeftChan chan struct{} // Signals when target UID leaves channel
+	targetLeftChan chan struct{} // Signals when primary UID leaves channel
 	isConnected   bool
 	isSpeaking    bool   // Track if currently sending speech to Anam
 	silenceFrames int    // Count consecutive silent frames (for voice_end)
@@ -35,24 +39,34 @@ type AgoraBot struct {
 
 	// Idle detection
 	lastAudioTime time.Time // Time when audio was last forwarded to Anam
+
+	// VAD bypass for initial audio flow
+	streamStartTime time.Time // When streaming started - bypass VAD for first few seconds
 }
 
+// VAD bypass duration - send all audio for this long after starting/switching
+const vadBypassDuration = 3 * time.Second
+
 // NewAgoraBot creates a new Agora bot that subscribes to audio and forwards to Anam
-func NewAgoraBot(appID, channel, botUID, token, targetUID string, anamClient *AnamClient) *AgoraBot {
+// primaryUID is the original user's UID - the bot will always stay subscribed to this
+func NewAgoraBot(appID, channel, botUID, token, primaryUID string, anamClient *AnamClient) *AgoraBot {
 	return &AgoraBot{
 		appID:          appID,
 		channel:        channel,
 		botUID:         botUID,
 		token:          token,
-		targetUID:      targetUID,
+		primaryUID:     primaryUID,
+		translationUID: "",    // No translation initially
+		translationActive: false,
 		anamClient:     anamClient,
 		stopChan:       make(chan struct{}),
 		targetLeftChan: make(chan struct{}),
 		isConnected:    false,
 		audioBuffer:    make([][]byte, 10), // 10 frames = ~100ms pre-roll
-		rmsThreshold:   100,                // RMS threshold for voice detection
+		rmsThreshold:   50,                 // Lower RMS threshold for voice detection (was 100)
 		sendingAudio:   false,
 		lastAudioTime:  time.Now(), // Initialize to now
+		streamStartTime: time.Now(), // Initialize for VAD bypass
 	}
 }
 
@@ -114,38 +128,54 @@ func (b *AgoraBot) Start() error {
 			fmt.Printf("[AgoraBot] ❌ Bot (UID %s) disconnected from channel: %s\n", b.botUID, info.ChannelId)
 		},
 		OnUserJoined: func(con *agoraservice.RtcConnection, uid string) {
-			fmt.Printf("[AgoraBot] 👤 User joined channel: UID %s (Bot listening for UID %s)\n", uid, b.targetUID)
+			fmt.Printf("[AgoraBot] 👤 User joined channel: UID %s (primary=%s, translation=%s)\n", uid, b.primaryUID, b.translationUID)
 
-			// Explicitly subscribe to Palabra audio when it joins
-			if uid == b.targetUID {
-				fmt.Printf("[AgoraBot] 🎯 Target UID %s joined! Bot will now subscribe and forward audio to Anam\n", uid)
-				fmt.Printf("[AgoraBot] Target UID %s joined! Explicitly subscribing to audio...\n", uid)
+			localUser := con.GetLocalUser()
+			if localUser == nil {
+				fmt.Printf("[AgoraBot] ERROR: localUser is nil, cannot subscribe\n")
+				return
+			}
 
-				// Get local user and subscribe
-				localUser := con.GetLocalUser()
-				if localUser != nil {
-					ret := localUser.SubscribeAudio(uid)
-					if ret == 0 {
-						fmt.Printf("[AgoraBot] Successfully subscribed to audio from UID %s\n", uid)
-					} else {
-						fmt.Printf("[AgoraBot] ERROR: Failed to subscribe to audio from UID %s, ret=%d\n", uid, ret)
-					}
+			// Subscribe to primary UID (original user) when they join
+			if uid == b.primaryUID {
+				fmt.Printf("[AgoraBot] 🎯 Primary UID %s joined! Subscribing to original audio\n", uid)
+				ret := localUser.SubscribeAudio(uid)
+				if ret == 0 {
+					fmt.Printf("[AgoraBot] ✅ Subscribed to primary audio from UID %s\n", uid)
 				} else {
-					fmt.Printf("[AgoraBot] ERROR: localUser is nil, cannot subscribe\n")
+					fmt.Printf("[AgoraBot] ERROR: Failed to subscribe to primary UID %s, ret=%d\n", uid, ret)
+				}
+			}
+
+			// Subscribe to translation UID (Palabra) when it joins, if translation is pending
+			if b.translationUID != "" && uid == b.translationUID {
+				fmt.Printf("[AgoraBot] 🌐 Translation UID %s joined! Subscribing to translated audio\n", uid)
+				ret := localUser.SubscribeAudio(uid)
+				if ret == 0 {
+					fmt.Printf("[AgoraBot] ✅ Subscribed to translation audio from UID %s\n", uid)
+				} else {
+					fmt.Printf("[AgoraBot] ERROR: Failed to subscribe to translation UID %s, ret=%d\n", uid, ret)
 				}
 			}
 		},
 		OnUserLeft: func(con *agoraservice.RtcConnection, uid string, reason int) {
 			fmt.Printf("[AgoraBot] User left: %s (reason: %d)\n", uid, reason)
-			// If our target UID (Palabra bot) leaves, signal to stop
-			if uid == b.targetUID {
-				fmt.Printf("[AgoraBot] ⚠️ Target UID %s left channel - signaling shutdown\n", uid)
+
+			// If primary UID (original user) leaves, signal to stop
+			if uid == b.primaryUID {
+				fmt.Printf("[AgoraBot] ⚠️ Primary UID %s left channel - signaling shutdown\n", uid)
 				select {
 				case <-b.targetLeftChan:
 					// Already closed
 				default:
 					close(b.targetLeftChan)
 				}
+			}
+
+			// If translation UID leaves, mark translation as inactive
+			if b.translationUID != "" && uid == b.translationUID {
+				fmt.Printf("[AgoraBot] 🌐 Translation UID %s left - falling back to primary audio\n", uid)
+				b.translationActive = false
 			}
 		},
 	}
@@ -171,11 +201,37 @@ func (b *AgoraBot) Start() error {
 	// Register audio frame observer AFTER connection
 	audioObserver := &agoraservice.AudioFrameObserver{
 		OnPlaybackAudioFrameBeforeMixing: func(localUser *agoraservice.LocalUser, channelId string, userId string, frame *agoraservice.AudioFrame, vadResultState agoraservice.VadState, vadResultFrame *agoraservice.AudioFrame) bool {
-			// DEBUG: Log EVERY audio callback
-			fmt.Printf("[AgoraBot] Audio callback fired - UID: %s, BufferSize: %d, Target: %s\n", userId, len(frame.Buffer), b.targetUID)
+			// DEBUG: Log all audio callbacks to diagnose issues
+			fmt.Printf("[AgoraBot] Audio callback - UID: %s, primary: %s, translation: %s, translationActive: %v\n",
+				userId, b.primaryUID, b.translationUID, b.translationActive)
 
-			// Only forward audio from Palabra UID
-			if userId == b.targetUID {
+			// DUAL-SUBSCRIPTION PRIORITY LOGIC:
+			// - If we receive audio from translationUID → use it (set translationActive = true)
+			// - If we receive audio from primaryUID AND (no translation OR translation not yet active) → use it
+			// This ensures seamless audio: original plays until translation kicks in, then falls back when translation stops
+
+			// Determine if we should process this audio
+			shouldProcess := false
+			audioSource := ""
+
+			if b.translationUID != "" && userId == b.translationUID {
+				// Translation audio - always prioritize when available
+				shouldProcess = true
+				audioSource = "translation"
+				if !b.translationActive {
+					fmt.Printf("[AgoraBot] 🌐 Translation audio detected from UID %s - switching to translated audio\n", userId)
+					b.translationActive = true
+				}
+			} else if userId == b.primaryUID {
+				// Primary (original) audio - use if no translation or translation not yet active
+				if b.translationUID == "" || !b.translationActive {
+					shouldProcess = true
+					audioSource = "primary"
+				}
+				// If translation is active, ignore primary audio (translation takes priority)
+			}
+
+			if shouldProcess {
 				// CRITICAL: Anam expects 24kHz audio, but Agora gives us 16kHz
 				// We need to upsample from 16kHz to 24kHz (ratio 3:2)
 
@@ -207,15 +263,22 @@ func (b *AgoraBot) Start() error {
 				b.audioBuffer[b.bufferIndex] = outputBytes
 				b.bufferIndex = (b.bufferIndex + 1) % len(b.audioBuffer)
 
-				// Check if voice detected (RMS above threshold)
-				voiceDetected := rms > b.rmsThreshold
+				// Check if in VAD bypass period (first 3 seconds after start/switch)
+				inBypassPeriod := time.Since(b.streamStartTime) < vadBypassDuration
+
+				// Check if voice detected (RMS above threshold) OR in bypass period
+				voiceDetected := rms > b.rmsThreshold || inBypassPeriod
 
 				if voiceDetected {
-					// Voice detected!
+					// Voice detected (or in bypass period)!
 					if !b.sendingAudio {
 						// START sending audio to Anam
 						// First, send pre-roll buffer (last 100ms) to catch the beginning
-						fmt.Printf("[AgoraBot] 🎤 VOICE DETECTED (RMS=%d) - Starting audio stream with 100ms pre-roll\n", rms)
+						if inBypassPeriod {
+							fmt.Printf("[AgoraBot] 🎤 VAD BYPASS - Starting audio stream immediately (RMS=%d)\n", rms)
+						} else {
+							fmt.Printf("[AgoraBot] 🎤 VOICE DETECTED (RMS=%d) - Starting audio stream with 100ms pre-roll\n", rms)
+						}
 
 						// Send buffered frames (last 10 frames = ~100ms)
 						sentPreroll := 0
@@ -249,7 +312,7 @@ func (b *AgoraBot) Start() error {
 					// Log every 100 frames (~1 second)
 					b.frameCount++
 					if b.frameCount%100 == 0 {
-						fmt.Printf("[AgoraBot] 📊 Sending voice: %d frames total, RMS=%d\n", b.frameCount, rms)
+						fmt.Printf("[AgoraBot] 📊 Sending %s voice: %d frames total, RMS=%d\n", audioSource, b.frameCount, rms)
 					}
 
 				} else if b.sendingAudio {
@@ -287,10 +350,11 @@ func (b *AgoraBot) Start() error {
 	fmt.Printf("[AgoraBot] Audio frame observer registered\n")
 
 	b.isConnected = true
-	fmt.Printf("[AgoraBot] Bot ready - subscribed to UID %s\n", b.targetUID)
+	b.streamStartTime = time.Now() // Start VAD bypass timer
+	fmt.Printf("[AgoraBot] Bot ready - subscribed to primary UID %s (VAD bypass for %v)\n", b.primaryUID, vadBypassDuration)
 
-	// NOTE: No test silence sender - only forward real audio from Palabra
-	fmt.Printf("[AgoraBot] Waiting for audio from Palabra UID %s\n", b.targetUID)
+	// NOTE: Bot is subscribed to primary (original user) and will add translation when requested
+	fmt.Printf("[AgoraBot] Waiting for audio from primary UID %s (will add translation UID when set)\n", b.primaryUID)
 
 	return nil
 }
@@ -322,59 +386,108 @@ func (b *AgoraBot) sendPeriodicSilence() {
 	}
 }
 
-// SwitchAudioSource changes the UID the bot subscribes to (for persistent avatar mode)
-// This allows switching between original user audio and Palabra translated audio
-func (b *AgoraBot) SwitchAudioSource(newUID string) error {
+// SetTranslationUID sets or clears the translation UID for dual-subscription mode
+// When set: bot subscribes to translation UID (if in channel) and prioritizes its audio
+// When cleared (empty string): bot falls back to primary UID audio only
+// Note: Bot always stays subscribed to primary UID - never unsubscribes from it
+func (b *AgoraBot) SetTranslationUID(translationUID string) error {
 	if !b.isConnected || b.conn == nil {
 		return fmt.Errorf("bot not connected")
 	}
 
-	oldUID := b.targetUID
-	if oldUID == newUID {
-		fmt.Printf("[AgoraBot] Audio source unchanged (already subscribed to UID %s)\n", newUID)
-		return nil
-	}
-
-	fmt.Printf("[AgoraBot] 🔄 Switching audio source: UID %s → UID %s\n", oldUID, newUID)
-
 	localUser := b.conn.GetLocalUser()
 	if localUser == nil {
-		return fmt.Errorf("localUser is nil, cannot switch audio source")
+		return fmt.Errorf("localUser is nil, cannot set translation UID")
 	}
 
-	// Unsubscribe from old UID
-	ret := localUser.UnsubscribeAudio(oldUID)
-	if ret != 0 {
-		fmt.Printf("[AgoraBot] WARNING: Failed to unsubscribe from UID %s (ret=%d), continuing anyway\n", oldUID, ret)
+	oldTransUID := b.translationUID
+
+	if translationUID == "" {
+		// Clearing translation - fall back to primary
+		if oldTransUID != "" {
+			fmt.Printf("[AgoraBot] 🔄 Clearing translation UID %s - falling back to primary UID %s\n", oldTransUID, b.primaryUID)
+			// Unsubscribe from old translation UID
+			ret := localUser.UnsubscribeAudio(oldTransUID)
+			if ret != 0 {
+				fmt.Printf("[AgoraBot] WARNING: Failed to unsubscribe from translation UID %s (ret=%d)\n", oldTransUID, ret)
+			}
+		}
+		b.translationUID = ""
+		b.translationActive = false
+		fmt.Printf("[AgoraBot] ✅ Now using primary audio only (UID %s)\n", b.primaryUID)
 	} else {
-		fmt.Printf("[AgoraBot] ✅ Unsubscribed from UID %s\n", oldUID)
+		// Setting new translation UID
+		if oldTransUID == translationUID {
+			fmt.Printf("[AgoraBot] Translation UID unchanged (%s)\n", translationUID)
+			return nil
+		}
+
+		// Unsubscribe from old translation UID if different
+		if oldTransUID != "" && oldTransUID != translationUID {
+			fmt.Printf("[AgoraBot] 🔄 Switching translation UID: %s → %s\n", oldTransUID, translationUID)
+			ret := localUser.UnsubscribeAudio(oldTransUID)
+			if ret != 0 {
+				fmt.Printf("[AgoraBot] WARNING: Failed to unsubscribe from old translation UID %s (ret=%d)\n", oldTransUID, ret)
+			}
+		} else {
+			fmt.Printf("[AgoraBot] 🌐 Setting translation UID: %s\n", translationUID)
+		}
+
+		b.translationUID = translationUID
+		b.translationActive = false // Will become true when we receive audio from this UID
+
+		// Try to subscribe (may fail if UID not yet in channel - that's OK, OnUserJoined will handle it)
+		ret := localUser.SubscribeAudio(translationUID)
+		if ret == 0 {
+			fmt.Printf("[AgoraBot] ✅ Subscribed to translation UID %s (waiting for audio)\n", translationUID)
+		} else {
+			fmt.Printf("[AgoraBot] ⏳ Translation UID %s not yet in channel (will subscribe when it joins)\n", translationUID)
+		}
 	}
-
-	// Update target UID
-	b.targetUID = newUID
-
-	// Subscribe to new UID
-	ret = localUser.SubscribeAudio(newUID)
-	if ret != 0 {
-		fmt.Printf("[AgoraBot] ERROR: Failed to subscribe to UID %s (ret=%d)\n", newUID, ret)
-		return fmt.Errorf("failed to subscribe to UID %s (ret=%d)", newUID, ret)
-	}
-
-	fmt.Printf("[AgoraBot] ✅ Subscribed to UID %s - audio source switch complete\n", newUID)
 
 	// Reset VAD state for clean audio handling
 	b.sendingAudio = false
 	b.speechFrames = 0
 	b.silenceFrames = 0
 	b.isSpeaking = false
-	b.lastAudioTime = time.Now()
+	b.streamStartTime = time.Now() // Restart VAD bypass timer for new audio source
 
 	return nil
 }
 
-// GetTargetUID returns the current target UID the bot is subscribed to
+// SwitchAudioSource is deprecated - use SetTranslationUID instead
+// Kept for backwards compatibility with existing IPC messages
+func (b *AgoraBot) SwitchAudioSource(newUID string) error {
+	// If newUID matches primary, clear translation (fall back to primary)
+	if newUID == b.primaryUID {
+		return b.SetTranslationUID("")
+	}
+	// Otherwise, set as translation UID
+	return b.SetTranslationUID(newUID)
+}
+
+// GetTargetUID returns the current active audio source UID
+// Returns translation UID if active, otherwise primary UID
 func (b *AgoraBot) GetTargetUID() string {
-	return b.targetUID
+	if b.translationUID != "" && b.translationActive {
+		return b.translationUID
+	}
+	return b.primaryUID
+}
+
+// GetPrimaryUID returns the primary (original user) UID
+func (b *AgoraBot) GetPrimaryUID() string {
+	return b.primaryUID
+}
+
+// GetTranslationUID returns the translation UID (empty if not set)
+func (b *AgoraBot) GetTranslationUID() string {
+	return b.translationUID
+}
+
+// IsTranslationActive returns true if translation audio is being prioritized
+func (b *AgoraBot) IsTranslationActive() bool {
+	return b.translationActive
 }
 
 // Stop disconnects the bot and releases resources

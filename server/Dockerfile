@@ -16,8 +16,10 @@ COPY agora_sdk /server/agora_sdk
 # Copy all source code
 COPY . .
 
-# Update go.sum with all dependencies
-RUN go mod tidy
+# Update go.mod and download dependencies
+# GOPROXY=direct prevents proxy caching issues
+ENV GOPROXY=direct,https://proxy.golang.org,direct
+RUN go mod tidy && go mod download
 
 # Build the binary with CGO enabled for Agora SDK
 # Set CGO flags to find Agora SDK headers and libraries
@@ -43,7 +45,9 @@ RUN apt-get update && apt-get install -y \
 COPY --from=build-env /go/bin/server /go/bin/server
 COPY --from=build-env /go/bin/bot_worker /go/bin/bot_worker
 COPY --from=build-env /server/config.json config.json
-COPY --from=build-env /server/migrations migrations
+
+# Create empty migrations directory (stub mode - no SQL migrations)
+RUN mkdir -p migrations
 
 # Copy Agora SDK libraries
 COPY agora_sdk/*.so /usr/local/lib/

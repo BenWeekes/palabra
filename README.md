@@ -257,10 +257,35 @@ curl -X POST https://yourdomain.com:7000/v1/avatar/start \
 
 ## Operating Modes
 
+### Translation Modes
+
 | Mode | Config | Description |
 |------|--------|-------------|
-| Audio-Only | `ENABLE_ANAM=false` | Translation audio only (UID 3000) |
-| Avatar | `ENABLE_ANAM=true` | Lip-synced avatar video+audio (UID 4000) |
+| Audio-Only | `ENABLE_ANAM=false` | Translation audio only (UID 3000+) |
+| Avatar | `ENABLE_ANAM=true` | Lip-synced avatar video+audio (UID 4000+) |
+
+### Avatar Modes
+
+| Mode | Flow | Description |
+|------|------|-------------|
+| **Non-Persistent** | Call `/v1/palabra/start` directly | Each translation creates its own avatar. Bot subscribes to Palabra UID. |
+| **Persistent** | Call `/v1/avatar/start` first, then `/v1/palabra/start` | Avatar stays active, seamlessly switches between original and translated audio. |
+
+**Persistent Avatar Benefits:**
+- Avatar appears immediately (no wait for translation to start)
+- Seamless audio: original audio plays until translation kicks in (no silence gap)
+- Fast switching: stop translation returns to original audio instantly
+
+### UID Ranges
+
+| Range | Purpose |
+|-------|---------|
+| 1-2999 | Regular users |
+| 3000-3999 | Palabra translation streams |
+| 4000-4999 | Anam avatar streams |
+| 5000+ | Backend bot workers |
+
+The frontend `VideoComponent.tsx` patch filters UIDs 3000-4999 from video tiles so translation/avatar streams don't appear as separate participants.
 
 ## Updating
 

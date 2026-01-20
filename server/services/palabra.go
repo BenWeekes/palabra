@@ -137,6 +137,8 @@ type AvatarStopResponse struct {
 var (
 	// Per-channel counters for Anam UIDs (channel -> next available UID)
 	channelAnamCounters = make(map[string]uint32)
+	// Per-channel counters for Translation UIDs (channel -> next available UID)
+	channelTransCounters = make(map[string]uint32)
 	// Task deduplication: map key is "channel:sourceUid:targetLanguage"
 	activeTasksByKey = make(map[string]*TaskInfo)
 	// Avatar sessions: map key is "channel:sourceUid"
@@ -150,6 +152,16 @@ func getNextAnamUID(channel string) uint32 {
 	}
 	uid := channelAnamCounters[channel]
 	channelAnamCounters[channel]++
+	return uid
+}
+
+// getNextTransUID returns the next available Translation UID for a channel
+func getNextTransUID(channel string) uint32 {
+	if _, exists := channelTransCounters[channel]; !exists {
+		channelTransCounters[channel] = transUIDBase // Start at 3000 for new channels
+	}
+	uid := channelTransCounters[channel]
+	channelTransCounters[channel]++
 	return uid
 }
 
@@ -243,7 +255,7 @@ func (s *ServiceRouter) PalabraStart(w http.ResponseWriter, r *http.Request) {
 	streams := make([]PalabraStreamInfo, len(req.TargetLanguages))
 
 	for i, lang := range req.TargetLanguages {
-		uid := transUIDBase + uint32(i)
+		uid := getNextTransUID(req.Channel) // Get unique UID per channel to avoid collisions
 		token, err := rtctoken.BuildTokenWithUID(
 			appID,
 			appCertificate,
