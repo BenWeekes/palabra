@@ -82,7 +82,7 @@ POSTGRES_DB=appbuilder
 # Server Configuration
 PORT=8080
 SCHEME=https
-ALLOWED_ORIGIN=https://yourdomain.com:7000
+ALLOWED_ORIGIN=https://yourdomain.com
 
 # Avatar Mode (set to true to enable Anam avatar)
 ENABLE_ANAM=true
@@ -136,9 +136,9 @@ nano template/config.json
 ```json
 {
   "APP_ID": "<your_agora_app_id>",
-  "FRONTEND_ENDPOINT": "https://yourdomain.com:7000",
-  "BACKEND_ENDPOINT": "https://yourdomain.com:7000",
-  "PALABRA_BACKEND_ENDPOINT": "https://yourdomain.com:7000"
+  "FRONTEND_ENDPOINT": "https://yourdomain.com",
+  "BACKEND_ENDPOINT": "https://yourdomain.com",
+  "PALABRA_BACKEND_ENDPOINT": "https://yourdomain.com"
 }
 ```
 
@@ -173,13 +173,13 @@ sudo nano /etc/nginx/sites-available/palabra
 
 ```nginx
 server {
-    listen 7000 ssl;
-    listen [::]:7000 ssl;
+    listen 443 ssl;
+    listen [::]:443 ssl;
 
     ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
 
-    # API proxy to backend
+    # API proxy to backend (Docker bound to localhost only)
     location /v1/ {
         proxy_pass http://localhost:7080/v1/;
         proxy_http_version 1.1;
@@ -211,9 +211,14 @@ server {
 }
 ```
 
+Nginx uses URL path to route requests: `/v1/*`, `/query`, `/oauth`, `/pstn` are proxied to the backend Docker container on `localhost:7080`, while everything else serves the frontend static files from `/var/www/palabra/`.
+
 **Enable site:**
 
 ```bash
+# Remove default site if it occupies port 443
+sudo rm -f /etc/nginx/sites-enabled/default
+
 sudo ln -s /etc/nginx/sites-available/palabra /etc/nginx/sites-enabled/
 sudo nginx -t
 sudo systemctl reload nginx
@@ -229,10 +234,10 @@ sudo certbot --nginx -d yourdomain.com
 
 ```bash
 # Test backend API
-curl https://yourdomain.com:7000/v1/palabra/tasks
+curl https://yourdomain.com/v1/palabra/tasks
 
 # Test avatar endpoints
-curl -X POST https://yourdomain.com:7000/v1/avatar/start \
+curl -X POST https://yourdomain.com/v1/avatar/start \
   -H "Content-Type: application/json" \
   -d '{"channel":"test","sourceUid":"123"}'
 ```
@@ -330,8 +335,8 @@ sudo docker logs server --tail 50
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   Browser       │────▶│   Nginx :7000    │────▶│  Backend :7080  │
-│   (Frontend)    │     │   (SSL + Proxy)  │     │  (Docker)       │
+│   Browser       │────▶│   Nginx :443     │────▶│  Backend :7080  │
+│   (Frontend)    │     │   (SSL + Proxy)  │     │  (localhost only)│
 └─────────────────┘     └──────────────────┘     └─────────────────┘
                                                           │
                                                           ▼
@@ -341,6 +346,19 @@ sudo docker logs server --tail 50
                                                  │   Agora RTC     │
                                                  └─────────────────┘
 ```
+
+**How nginx routes requests:** Nginx listens on port 443 (standard HTTPS) and uses URL path to decide where to send each request. API paths (`/v1/*`, `/query`) are proxied to the Go backend on `localhost:7080`. All other paths serve the frontend static files from `/var/www/palabra/`. The Docker ports for the backend and database are bound to `127.0.0.1` only, so they are not accessible from the internet.
+
+### Production Hardening
+
+The following settings are applied for production:
+
+| Setting | File | Value |
+|---------|------|-------|
+| CORS debug | `server/cmd/video_conferencing/server.go` | `Debug: false` |
+| Log level | `server/config.json` | `LOG_LEVEL: "WARN"` |
+| Docker ports | `server/docker-compose.yml` | Bound to `127.0.0.1` only |
+| Nginx port | `/etc/nginx/sites-available/palabra` | `443` (standard HTTPS) |
 
 ## Documentation
 

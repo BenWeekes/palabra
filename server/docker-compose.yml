@@ -33,7 +33,7 @@ services:
             - ANAM_QUALITY=$ANAM_QUALITY
             - ANAM_VIDEO_ENCODING=$ANAM_VIDEO_ENCODING
         ports:
-            - "7080:8080"
+            - "127.0.0.1:7080:8080"
 
     database:
         container_name: server_database
@@ -45,7 +45,7 @@ services:
             - POSTGRES_PASSWORD=$POSTGRES_PASSWORD
             - POSTGRES_DB=$POSTGRES_DB
         ports:
-            - "5432:5432"
+            - "127.0.0.1:5432:5432"
         healthcheck:
             test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
             interval: 5s

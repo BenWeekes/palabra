@@ -112,7 +112,7 @@ func main() {
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Requested-With", "X-Request-Id", "X-Session-Id"},
 		ExposedHeaders:   []string{"Link"},
 		MaxAge:           300,
-		Debug:            true,
+		Debug:            false,
 	})
 	router.Use(c.Handler)
 	router.Use(handlers.RecoveryHandler())
