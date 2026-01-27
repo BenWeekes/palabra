@@ -6,6 +6,7 @@ app-builder/
 node_modules/
 
 # Environment files with secrets
+.env
 server/.env
 
 # OS files
