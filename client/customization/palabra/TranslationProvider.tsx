@@ -14,13 +14,22 @@ import React, {
 import {useRoomInfo, UidType} from 'customization-api';
 import {RtcContext} from '../../agora-rn-uikit';
 import {useUserActionMenu} from '../../src/components/useUserActionMenu';
-import {AvatarMenuItem, TranslationMenuItem} from './TranslationMenuItem';
+import {
+  StartAvatarMenuItem,
+  TranslateWithVideoMenuItem,
+  TranslateAudioMenuItem,
+  TranslateAudioOriginalMenuItem,
+  StopTranslationMenuItem,
+} from './TranslationMenuItem';
 import SDKEvents from '../../src/utils/SdkEvents';
 
 // Palabra UIDs start at 3000 (audio-only translation)
 const PALABRA_UID_BASE = 3000;
 // Anam UIDs start at 4000 (avatar video+audio)
 const ANAM_UID_BASE = 4000;
+
+// The 4 translation modes
+type TranslationMode = 'avatar' | 'translate_video' | 'translate_audio' | 'translate_audio_with_original';
 
 interface TranslationStream {
   language: string;
@@ -45,6 +54,7 @@ interface ActiveTranslation {
   taskId: string;
   targetLanguage: string;
   translationUid: string;
+  mode: TranslationMode;
 }
 
 // Persistent Avatar session (started independently from translation)
@@ -68,9 +78,11 @@ interface TranslationContextType {
     sourceUid: string,
     sourceLanguage: string,
     targetLanguage: string,
+    mode: TranslationMode,
   ) => Promise<void>;
   stopTranslation: (sourceUid: string) => Promise<void>;
   isTranslating: (sourceUid: string) => boolean;
+  getTranslationMode: (sourceUid: string) => TranslationMode | undefined;
   availableLanguages: Language[];
   isPalabraUid: (uid: number | string) => boolean;
   isAnamUid: (uid: number | string) => boolean;
@@ -87,6 +99,7 @@ const TranslationContext = createContext<TranslationContextType>({
   startTranslation: async () => {},
   stopTranslation: async () => {},
   isTranslating: () => false,
+  getTranslationMode: () => undefined,
   availableLanguages: [],
   isPalabraUid: () => false,
   isAnamUid: () => false,
@@ -136,6 +149,9 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
   // Ref to store original Agora subscribe function (before monkey-patch)
   const originalSubscribeRef = useRef<any>(null);
 
+  // Track users whose volume was reduced to 20% (mode 4)
+  const reducedVolumeUsers = useRef<Set<string>>(new Set());
+
   // Keep refs in sync with state
   useEffect(() => {
     activeTranslationsRef.current = activeTranslations;
@@ -176,10 +192,24 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
         // CRITICAL: Also block sourceUid if it's currently being translated
         // This prevents dual audio (original + translation) if source re-publishes
         const isSourceBeingTranslated = activeTranslationsRef.current.has(uidString);
-        if (isSourceBeingTranslated) {
+        if (isSourceBeingTranslated && mediaType === 'audio') {
           const translation = activeTranslationsRef.current.get(uidString);
-          console.log('[Palabra] 🚫 Blocking auto-subscribe for sourceUid being translated:', user.uid, mediaType, '(translationUid:', translation?.translationUid, ')');
+          if (translation?.mode === 'translate_audio_with_original') {
+            // Mode 4: allow source audio through at reduced volume
+            console.log('[Palabra] Mode 4: allowing source audio at 20% for UID', user.uid);
+            const result = await originalSubscribe(user, mediaType);
+            if (user.audioTrack) {
+              user.audioTrack.setVolume(20);
+            }
+            reducedVolumeUsers.current.add(uidString);
+            return result;
+          }
+          console.log('[Palabra] Blocking auto-subscribe for sourceUid being translated:', user.uid, mediaType, '(translationUid:', translation?.translationUid, ')');
           return;
+        }
+        if (isSourceBeingTranslated && mediaType === 'video') {
+          // Video subscriptions are not blocked for any mode (video stays unchanged in modes 3,4)
+          return originalSubscribe(user, mediaType);
         }
 
         // Normal UIDs: allow subscription
@@ -197,46 +227,70 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
   }, [rtcClient]);
 
   /**
-   * Register the avatar and translation menu items
+   * Register the 5 fixed translation mode menu items
    */
   useEffect(() => {
+    const visibility = [
+      'host-remote',
+      'attendee-remote',
+      'event-host-remote',
+      'event-attendee-remote',
+    ];
+
     updateUserActionMenuItems(prevItems => ({
       ...prevItems,
       'start-avatar': {
         hide: false,
+        order: 8,
+        disabled: false,
+        visibility,
+        component: StartAvatarMenuItem,
+        onAction: () => {},
+      },
+      'translate-with-video': {
+        hide: false,
         order: 9,
         disabled: false,
-        visibility: [
-          'host-remote',
-          'attendee-remote',
-          'event-host-remote',
-          'event-attendee-remote',
-        ],
-        component: AvatarMenuItem,
-        onAction: (uid?: string | number) => {
-          // Avatar menu action
-        },
+        visibility,
+        component: TranslateWithVideoMenuItem,
+        onAction: () => {},
       },
-      'enable-translation': {
+      'translate-audio': {
         hide: false,
         order: 10,
         disabled: false,
-        visibility: [
-          'host-remote',
-          'attendee-remote',
-          'event-host-remote',
-          'event-attendee-remote',
-        ],
-        component: TranslationMenuItem,
-        onAction: (uid?: string | number) => {
-          // Translation menu action
-        },
+        visibility,
+        component: TranslateAudioMenuItem,
+        onAction: () => {},
+      },
+      'translate-audio-orig': {
+        hide: false,
+        order: 11,
+        disabled: false,
+        visibility,
+        component: TranslateAudioOriginalMenuItem,
+        onAction: () => {},
+      },
+      'stop-translation': {
+        hide: false,
+        order: 12,
+        disabled: false,
+        visibility,
+        component: StopTranslationMenuItem,
+        onAction: () => {},
       },
     }));
 
     return () => {
       updateUserActionMenuItems(prevItems => {
-        const {['start-avatar']: removedAvatar, ['enable-translation']: removedTranslation, ...rest} = prevItems;
+        const {
+          ['start-avatar']: _a,
+          ['translate-with-video']: _b,
+          ['translate-audio']: _c,
+          ['translate-audio-orig']: _d,
+          ['stop-translation']: _e,
+          ...rest
+        } = prevItems;
         return rest;
       });
     };
@@ -688,25 +742,29 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
       sourceUid: string,
       sourceLanguage: string,
       targetLanguage: string,
+      mode: TranslationMode,
     ) => {
       try {
         // Get channel name - try different properties
         const channelName = channel.channel || channel.name || channel;
+        const wantAvatar = (mode === 'avatar' || mode === 'translate_video');
 
-        console.log('[Palabra] 🚀 Starting translation:', {
+        console.log('[Palabra] Starting translation:', {
           sourceUid,
           sourceLanguage,
           targetLanguage,
+          mode,
           channel: channelName,
         });
 
         // CRITICAL: Store placeholder in activeTranslations IMMEDIATELY
         // This prevents race condition where UID publishes before API response
-        const placeholderTranslation = {
+        const placeholderTranslation: ActiveTranslation = {
           sourceUid,
           translationUid: '', // Will be updated when API responds
           targetLanguage,
           taskId: '',
+          mode,
         };
 
         setActiveTranslations(prev => {
@@ -718,24 +776,22 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
         // Also update ref synchronously
         activeTranslationsRef.current.set(sourceUid, placeholderTranslation);
 
-        console.log('[Palabra] 🔒 Pre-blocked sourceUid in Map (size now:', activeTranslationsRef.current.size, ')');
-
-        // NOTE: Do NOT unsubscribe from original audio here
-        // We wait until translation audio actually publishes to avoid audio gap
+        console.log('[Palabra] Pre-blocked sourceUid in Map (size now:', activeTranslationsRef.current.size, ')');
 
         // Call Backend
         const backendUrl = $config.PALABRA_BACKEND_ENDPOINT || $config.BACKEND_ENDPOINT;
         const url = `${backendUrl}/v1/palabra/start`;
 
-        console.log('[Palabra] 📡 Calling backend:', url);
+        console.log('[Palabra] Calling backend:', url);
 
         const requestBody = {
           channel: channelName || '',
           sourceUid: sourceUid,
           sourceLanguage: sourceLanguage,
           targetLanguages: [targetLanguage],
+          mode: mode,
         };
-        console.log('[Palabra] 📤 Request body:', requestBody);
+        console.log('[Palabra] Request body:', requestBody);
 
         const response = await fetch(url, {
           method: 'POST',
@@ -751,10 +807,8 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
 
         const data = await response.json();
 
-        // DEBUG: Log full backend response
         console.log('[Palabra] Backend /v1/palabra/start response:', JSON.stringify(data, null, 2));
 
-        // Check if translation task was successful
         if (!data.success) {
           const errorMsg = data.error || 'Unknown error';
           alert(`Translation failed: ${errorMsg}`);
@@ -770,7 +824,7 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
           throw new Error('No translation stream returned');
         }
 
-        console.log('[Palabra] Translation stream UID:', translationStream.uid, 'Type:', isAnamUid(translationStream.uid) ? 'Anam (avatar)' : 'Palabra (audio-only)');
+        console.log('[Palabra] Translation stream UID:', translationStream.uid, 'Mode:', mode);
 
         // Check if there's a persistent avatar already running for this source
         const existingAvatar = activeAvatars.get(sourceUid);
@@ -782,6 +836,7 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
           taskId: data.taskId,
           targetLanguage,
           translationUid: translationStream.uid,
+          mode,
         };
 
         console.log('[Palabra] Translation task created:', {
@@ -789,10 +844,9 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
           translationUid: translationStream.uid,
           targetLanguage,
           taskId: data.taskId,
+          mode,
           hasPersistentAvatar,
         });
-
-        console.log('[Palabra] 🔄 Updating placeholder with real translationUid:', translationStream.uid);
 
         // Update ref immediately (synchronous) so late-arrival check sees it
         const newMap = new Map(activeTranslationsRef.current);
@@ -802,20 +856,9 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
         // Update state (asynchronous - triggers re-render)
         setActiveTranslations(newMap);
 
-        console.log('[Palabra] ✓ Stored translation in activeTranslations:', {
-          sourceUid,
-          translationUid: translation.translationUid,
-          mapSize: newMap.size,
-          allEntries: Array.from(newMap.entries()).map(([k, v]) => ({
-            sourceUid: k,
-            translationUid: v.translationUid,
-          })),
-        });
-
         if (hasPersistentAvatar) {
           // PERSISTENT AVATAR MODE: Avatar already subscribed, backend handles audio switch
-          console.log('[Palabra] 🎭 Persistent avatar active - skipping subscription, backend switches audio to translation');
-          // Update avatar session state
+          console.log('[Palabra] Persistent avatar active - backend switches audio to translation');
           setActiveAvatars(prev => {
             const newMap = new Map(prev);
             const session = newMap.get(sourceUid);
@@ -825,93 +868,75 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
             return newMap;
           });
         } else {
-          // NO PERSISTENT AVATAR: Need to subscribe to translation stream
+          // Need to subscribe to translation stream
           // RACE CONDITION FIX: Check if UID already published while we were waiting for backend response
           const client = (rtcClient as any).client;
           if (client) {
-            // Use native Agora SDK's remoteUsers, not App Builder's wrapper
-            // App Builder's rtcClient.remoteUsers only includes subscribed users
             const remoteUsers = client.remoteUsers || [];
-            console.log('[Palabra] 🔍 Checking remoteUsers for late arrival. Looking for UID:', translationStream.uid);
-            console.log('[Palabra] 🔍 remoteUsers count:', remoteUsers.length);
-            console.log('[Palabra] 🔍 remoteUsers UIDs:', remoteUsers.map((u: any) => u.uid));
+            console.log('[Palabra] Checking remoteUsers for late arrival. Looking for UID:', translationStream.uid);
 
             const existingUser = remoteUsers.find((u: any) => u.uid.toString() === translationStream.uid);
-            console.log('[Palabra] 🔍 existingUser found?', !!existingUser, 'Looking for:', translationStream.uid);
 
             if (existingUser) {
-              console.log('[Palabra] ⚡ Translation UID', translationStream.uid, 'already published (late arrival) - subscribing now');
-              console.log('[Palabra] 🔍 User object before subscribe:', {
-                uid: existingUser.uid,
-                hasAudio: existingUser.hasAudio,
-                hasVideo: existingUser.hasVideo,
-                audioTrack: !!existingUser.audioTrack,
-                videoTrack: !!existingUser.videoTrack,
-              });
+              console.log('[Palabra] Translation UID', translationStream.uid, 'already published (late arrival) - subscribing now');
 
               try {
-                // Use original subscribe function to bypass monkey-patch
                 const originalSubscribe = originalSubscribeRef.current;
                 if (!originalSubscribe) {
-                  console.error('[Palabra] ❌ Original subscribe function not available');
+                  console.error('[Palabra] Original subscribe function not available');
                   return;
                 }
 
-                // Subscribe to audio for Anam UIDs or Palabra UIDs
+                // Subscribe to audio for translation UIDs
                 if ((isAnamUid(translationStream.uid) || isPalabraUid(translationStream.uid)) && existingUser.hasAudio) {
-                  console.log('[Palabra] 🔄 Subscribing to audio for UID', translationStream.uid);
+                  console.log('[Palabra] Subscribing to translation audio for UID', translationStream.uid);
                   await originalSubscribe(existingUser, 'audio');
-
-                  console.log('[Palabra] 🔍 After subscribe, user.audioTrack:', !!existingUser.audioTrack);
 
                   if (existingUser.audioTrack) {
                     try {
-                      // NOW unsubscribe from original audio (translation audio is ready)
-                      console.log('[Palabra] 🔇 Unsubscribing from original audio for UID', sourceUid);
-                      await unsubscribeFromUser(sourceUid);
+                      if (mode === 'translate_audio_with_original') {
+                        // Mode 4: reduce source volume to 20% instead of unsubscribing
+                        const sourceUser = remoteUsers.find((u: any) => u.uid.toString() === sourceUid);
+                        if (sourceUser && sourceUser.audioTrack) {
+                          sourceUser.audioTrack.setVolume(20);
+                          reducedVolumeUsers.current.add(sourceUid);
+                          console.log('[Palabra] Mode 4: set source audio to 20% for UID', sourceUid);
+                        }
+                      } else {
+                        // Modes 1,2,3: unsubscribe from original audio
+                        console.log('[Palabra] Unsubscribing from original audio for UID', sourceUid);
+                        await unsubscribeFromUser(sourceUid);
+                      }
 
                       existingUser.audioTrack.play();
-                      console.log('[Palabra] ✓ Playing translation audio from UID', translationStream.uid);
+                      console.log('[Palabra] Playing translation audio from UID', translationStream.uid);
                     } catch (err: any) {
-                      console.error('[Palabra] ❌ Failed to play audio for UID', translationStream.uid, ':', err);
+                      console.error('[Palabra] Failed to play audio for UID', translationStream.uid, ':', err);
                     }
-                  } else {
-                    console.log('[Palabra] ⚠️ No audio track on user object after subscribe for UID', translationStream.uid);
-                    console.log('[Palabra] 🔍 User object keys:', Object.keys(existingUser));
                   }
                 }
 
-                // Subscribe to video for Anam UIDs (play in source user's tile)
-                if (isAnamUid(translationStream.uid) && existingUser.hasVideo) {
-                  console.log('[Palabra] 🔄 Subscribing to video for UID', translationStream.uid);
+                // Subscribe to video only for avatar modes (1,2)
+                if (wantAvatar && isAnamUid(translationStream.uid) && existingUser.hasVideo) {
+                  console.log('[Palabra] Subscribing to video for UID', translationStream.uid);
                   await originalSubscribe(existingUser, 'video');
 
-                  console.log('[Palabra] 🔍 After subscribe, user.videoTrack:', !!existingUser.videoTrack);
-
                   if (existingUser.videoTrack) {
-                    // Play Anam avatar video in the source user's tile (sourceUid from outer scope)
-                    console.log('[Palabra] ✓ Playing Anam avatar video in place of source UID', sourceUid);
+                    console.log('[Palabra] Playing avatar video in place of source UID', sourceUid);
 
-                    // Stop the original video if it's playing
                     const sourceUser = client.remoteUsers.find((u: any) => u.uid.toString() === sourceUid);
                     if (sourceUser && sourceUser.videoTrack) {
-                      console.log('[Palabra] Stopping original video for source UID', sourceUid);
                       sourceUser.videoTrack.stop();
                     }
 
-                    // Play Anam avatar video in the source user's container div
-                    // Use 16:9 wrapper to ensure proper aspect ratio
                     playVideoIn16x9Container(existingUser.videoTrack, sourceUid);
-                  } else {
-                    console.log('[Palabra] ⚠️ No video track on user object after subscribe for UID', translationStream.uid);
-                    console.log('[Palabra] 🔍 User object keys:', Object.keys(existingUser));
                   }
                 }
               } catch (error) {
-                console.error('[Palabra] ❌ Failed to subscribe to late-arrival UID', translationStream.uid, ':', error);
+                console.error('[Palabra] Failed to subscribe to late-arrival UID', translationStream.uid, ':', error);
               }
             } else {
-              console.log('[Palabra] ✓ Translation task created for UID', translationStream.uid, '- will subscribe when it publishes');
+              console.log('[Palabra] Translation task created for UID', translationStream.uid, '- will subscribe when it publishes');
             }
           }
         }
@@ -932,6 +957,8 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
     async (sourceUid: string) => {
       const translation = activeTranslations.get(sourceUid);
       if (!translation) return;
+
+      const translationMode = translation.mode;
 
       // Check if there's a persistent avatar for this source
       const avatarSession = activeAvatars.get(sourceUid);
@@ -960,12 +987,11 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
 
         // Also update ref synchronously so monkey-patch sees it immediately
         activeTranslationsRef.current.delete(sourceUid);
-        console.log('[Palabra] 🔓 Removed sourceUid from Map (size now:', activeTranslationsRef.current.size, ')');
+        console.log('[Palabra] Removed sourceUid from Map (size now:', activeTranslationsRef.current.size, ')');
 
         if (hasPersistentAvatar) {
           // PERSISTENT AVATAR MODE: Don't unsubscribe from avatar, backend switches audio source
-          console.log('[Palabra] 🎭 Persistent avatar active - keeping avatar video, backend switches to original audio');
-          // Update avatar session state
+          console.log('[Palabra] Persistent avatar active - keeping avatar video, backend switches to original audio');
           setActiveAvatars(prev => {
             const newMap = new Map(prev);
             const session = newMap.get(sourceUid);
@@ -974,8 +1000,23 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
             }
             return newMap;
           });
+        } else if (translationMode === 'translate_audio_with_original') {
+          // Mode 4: restore source volume to 100% and unsubscribe from translation
+          console.log('[Palabra] Mode 4 stop: restoring source volume and unsubscribing from translation');
+          await unsubscribeFromUser(translation.translationUid);
+
+          const client = (rtcClient as any).client;
+          if (client) {
+            const remoteUsers = client.remoteUsers || [];
+            const sourceUser = remoteUsers.find((u: any) => u.uid.toString() === sourceUid);
+            if (sourceUser && sourceUser.audioTrack) {
+              sourceUser.audioTrack.setVolume(100);
+              console.log('[Palabra] Restored source audio volume to 100% for UID', sourceUid);
+            }
+          }
+          reducedVolumeUsers.current.delete(sourceUid);
         } else {
-          // NO PERSISTENT AVATAR: Full cleanup (current behavior)
+          // Modes 1,2,3 (no persistent avatar): Full cleanup
           // Unsubscribe from translation stream
           await unsubscribeFromUser(translation.translationUid);
 
@@ -988,19 +1029,19 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
             if (sourceUser) {
               // Re-subscribe to audio
               if (sourceUser.hasAudio) {
-                console.log('[Palabra] 🔊 Re-subscribing to original audio for UID', sourceUid);
+                console.log('[Palabra] Re-subscribing to original audio for UID', sourceUid);
                 await subscribeToUser(sourceUid);
               }
 
-              // Re-subscribe to video
-              if (sourceUser.hasVideo) {
+              // Re-subscribe to video (only needed if avatar modes 1,2 changed it)
+              const wantAvatar = (translationMode === 'avatar' || translationMode === 'translate_video');
+              if (wantAvatar && sourceUser.hasVideo) {
                 try {
                   const originalSubscribe = originalSubscribeRef.current;
                   await originalSubscribe(sourceUser, 'video');
                   if (sourceUser.videoTrack) {
-                    // Play video in the user's tile with 16:9 container
                     playVideoIn16x9Container(sourceUser.videoTrack, sourceUid);
-                    console.log('[Palabra] ✓ Re-subscribed to original video for UID', sourceUid);
+                    console.log('[Palabra] Re-subscribed to original video for UID', sourceUid);
                   }
                 } catch (error) {
                   console.error('[Palabra] Failed to re-subscribe to video:', error);
@@ -1013,7 +1054,7 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
         console.error('[Palabra] Error stopping translation:', error);
       }
     },
-    [activeTranslations, activeAvatars, unsubscribeFromUser, subscribeToUser, playVideoIn16x9Container],
+    [activeTranslations, activeAvatars, rtcClient, unsubscribeFromUser, subscribeToUser, playVideoIn16x9Container],
   );
 
   /**
@@ -1022,6 +1063,16 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
   const isTranslating = useCallback(
     (sourceUid: string): boolean => {
       return activeTranslations.has(sourceUid);
+    },
+    [activeTranslations],
+  );
+
+  /**
+   * Get the current translation mode for a user
+   */
+  const getTranslationMode = useCallback(
+    (sourceUid: string): TranslationMode | undefined => {
+      return activeTranslations.get(sourceUid)?.mode;
     },
     [activeTranslations],
   );
@@ -1044,7 +1095,7 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
 
       // Check if this is a translation UID (3000-4999)
       if (isTranslationUid(uid)) {
-        console.log('[Palabra] 📡 Translation/Avatar UID published:', uidString, 'Type:', mediaType);
+        console.log('[Palabra] Translation/Avatar UID published:', uidString, 'Type:', mediaType);
 
         // Use refs to get current state (avoids stale closure)
         const currentTranslations = activeTranslationsRef.current;
@@ -1064,77 +1115,96 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
 
         // Determine the source UID for video placement
         const sourceUid = translation?.sourceUid || avatarSession?.sourceUid;
+        const translationMode = translation?.mode;
+        const wantAvatar = (translationMode === 'avatar' || translationMode === 'translate_video');
 
         if (translation || avatarSession) {
-          console.log('[Palabra] ✓ Requested UID', uidString, '- subscribing to', mediaType, '(source:', sourceUid, ')');
+          console.log('[Palabra] Requested UID', uidString, '- subscribing to', mediaType, '(source:', sourceUid, 'mode:', translationMode, ')');
 
           try {
-            // Use original subscribe function to bypass monkey-patch
             const originalSubscribe = originalSubscribeRef.current;
             if (!originalSubscribe) {
-              console.error('[Palabra] ❌ Original subscribe function not available');
+              console.error('[Palabra] Original subscribe function not available');
               return;
             }
 
-            // Subscribe to audio (only for Anam UIDs 4000+)
+            // Subscribe to audio (Anam UIDs 4000+)
             if (mediaType === 'audio' && isAnamUid(uid)) {
-              // IMPORTANT: Always unsubscribe from source user audio first!
-              // Otherwise user hears BOTH original audio and avatar audio
               if (sourceUid) {
-                console.log('[Palabra] 🔇 Unsubscribing from original audio for UID', sourceUid);
-                await unsubscribeFromUser(sourceUid);
+                if (translationMode === 'translate_audio_with_original') {
+                  // Mode 4: reduce source volume instead of unsubscribing
+                  const remoteUsers = client.remoteUsers || [];
+                  const sourceUser = remoteUsers.find((u: any) => u.uid.toString() === sourceUid);
+                  if (sourceUser && sourceUser.audioTrack) {
+                    sourceUser.audioTrack.setVolume(20);
+                    reducedVolumeUsers.current.add(sourceUid);
+                    console.log('[Palabra] Mode 4: set source audio to 20% for UID', sourceUid);
+                  }
+                } else {
+                  // Modes 1,2,3: unsubscribe from source audio
+                  console.log('[Palabra] Unsubscribing from original audio for UID', sourceUid);
+                  await unsubscribeFromUser(sourceUid);
+                }
               }
 
               await originalSubscribe(user, 'audio');
               if (user.audioTrack) {
                 try {
                   user.audioTrack.play();
-                  console.log('[Palabra] ✓ Playing Anam avatar audio from UID', uidString);
+                  console.log('[Palabra] Playing Anam avatar audio from UID', uidString);
                 } catch (err: any) {
-                  console.error('[Palabra] ❌ Failed to play Anam audio:', err);
+                  console.error('[Palabra] Failed to play Anam audio:', err);
                 }
               }
             } else if (mediaType === 'audio' && isPalabraUid(uid)) {
-              // Subscribe to Palabra audio (3000+) when not using Anam (audio-only translation)
+              // Palabra audio (3000+) — audio-only modes
               await originalSubscribe(user, 'audio');
               if (user.audioTrack) {
                 try {
                   if (sourceUid) {
-                    console.log('[Palabra] 🔇 Unsubscribing from original audio for UID', sourceUid);
-                    await unsubscribeFromUser(sourceUid);
+                    if (translationMode === 'translate_audio_with_original') {
+                      // Mode 4: reduce source volume instead of unsubscribing
+                      const remoteUsers = client.remoteUsers || [];
+                      const sourceUser = remoteUsers.find((u: any) => u.uid.toString() === sourceUid);
+                      if (sourceUser && sourceUser.audioTrack) {
+                        sourceUser.audioTrack.setVolume(20);
+                        reducedVolumeUsers.current.add(sourceUid);
+                        console.log('[Palabra] Mode 4: set source audio to 20% for UID', sourceUid);
+                      }
+                    } else {
+                      // Modes 1,2,3: unsubscribe from source audio
+                      console.log('[Palabra] Unsubscribing from original audio for UID', sourceUid);
+                      await unsubscribeFromUser(sourceUid);
+                    }
                   }
 
                   user.audioTrack.play();
-                  console.log('[Palabra] ✓ Playing Palabra translation audio (audio-only mode) from UID', uidString);
+                  console.log('[Palabra] Playing Palabra translation audio from UID', uidString, 'mode:', translationMode);
                 } catch (err: any) {
-                  console.error('[Palabra] ❌ Failed to play Palabra audio:', err);
+                  console.error('[Palabra] Failed to play Palabra audio:', err);
                 }
               }
             }
 
-            // Subscribe to video (only for Anam UIDs 4000+)
-            if (mediaType === 'video' && isAnamUid(uid) && sourceUid) {
+            // Subscribe to video only for avatar modes (1,2)
+            if (mediaType === 'video' && isAnamUid(uid) && sourceUid && (wantAvatar || avatarSession)) {
               await originalSubscribe(user, 'video');
               if (user.videoTrack) {
-                console.log('[Palabra] ✓ Playing Anam avatar video in place of source UID', sourceUid);
+                console.log('[Palabra] Playing avatar video in place of source UID', sourceUid);
 
-                // Stop the original video if it's playing
                 const sourceUser = client.remoteUsers.find((u: any) => u.uid.toString() === sourceUid);
                 if (sourceUser && sourceUser.videoTrack) {
-                  console.log('[Palabra] Stopping original video for source UID', sourceUid);
                   sourceUser.videoTrack.stop();
                 }
 
-                // Play Anam avatar video in the source user's container div
-                // Use 16:9 wrapper to ensure proper aspect ratio
                 playVideoIn16x9Container(user.videoTrack, sourceUid);
               }
             }
           } catch (error) {
-            console.error('[Palabra] ❌ Failed to subscribe to UID', uidString + ':', error);
+            console.error('[Palabra] Failed to subscribe to UID', uidString + ':', error);
           }
         } else {
-          console.log('[Palabra] ℹ️ UID', uidString, 'not requested by this user (ignoring)');
+          console.log('[Palabra] UID', uidString, 'not requested by this user (ignoring)');
         }
       }
     };
@@ -1165,6 +1235,7 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
     startTranslation,
     stopTranslation,
     isTranslating,
+    getTranslationMode,
     availableLanguages,
     isPalabraUid,
     isAnamUid,

@@ -34,6 +34,8 @@ services:
             - ANAM_VIDEO_ENCODING=$ANAM_VIDEO_ENCODING
         ports:
             - "127.0.0.1:7080:8080"
+        volumes:
+            - ./config.json:/config.json:ro
 
     database:
         container_name: server_database

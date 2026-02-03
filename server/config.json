@@ -1,7 +1,7 @@
 {
   "ENABLE_CONSOLE_LOGGING": true,
   "ENABLE_FILE_LOGGING": false,
-  "LOG_LEVEL": "WARN",
+  "LOG_LEVEL": "INFO",
   "RUN_MIGRATION": false,
   "ENABLE_OAUTH": false,
   "ALLOW_LIST": ["*"]

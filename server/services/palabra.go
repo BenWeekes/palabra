@@ -20,6 +20,7 @@ type PalabraStartRequest struct {
 	SourceName       string   `json:"sourceName"`       // NEW: User's display name
 	SourceLanguage   string   `json:"sourceLanguage"`
 	TargetLanguages  []string `json:"targetLanguages"`
+	Mode             string   `json:"mode,omitempty"`
 }
 
 // PalabraStopRequest represents the request to stop translation
@@ -70,6 +71,7 @@ type PalabraStartResponse struct {
 	Success bool                `json:"success"`
 	TaskID  string              `json:"taskId"`
 	Streams []PalabraStreamInfo `json:"streams"`
+	Mode    string              `json:"mode,omitempty"`
 	Error   string              `json:"error,omitempty"`
 }
 
@@ -93,6 +95,7 @@ type TaskInfo struct {
 	SourceUID   string
 	Channel     string
 	Language    string
+	Mode        string
 }
 
 // AvatarSession represents a standalone avatar session (persistent avatar mode)
@@ -183,6 +186,7 @@ func (s *ServiceRouter) PalabraStart(w http.ResponseWriter, r *http.Request) {
 		Str("sourceUid", req.SourceUID).
 		Str("sourceLanguage", req.SourceLanguage).
 		Strs("targetLanguages", req.TargetLanguages).
+		Str("mode", req.Mode).
 		Msg("[PALABRA-START] Received translation request")
 
 	// Validate required fields
@@ -387,11 +391,30 @@ func (s *ServiceRouter) PalabraStart(w http.ResponseWriter, r *http.Request) {
 
 	s.Logger.Info().Str("taskId", taskID).Msg("Translation task started successfully")
 
-	// NEW: Check if Anam is enabled
-	enableAnam := viper.GetBool("ENABLE_ANAM")
+	// Determine effective mode (backward compatible — empty = old behavior)
+	mode := req.Mode
+	if mode == "" {
+		if viper.GetBool("ENABLE_ANAM") {
+			mode = "translate_video"
+		} else {
+			mode = "translate_audio"
+		}
+	}
 
-	if enableAnam {
-		s.Logger.Info().Msg("Anam is enabled, checking for existing avatar")
+	s.Logger.Info().
+		Str("requestedMode", req.Mode).
+		Str("effectiveMode", mode).
+		Msg("[PALABRA-START] Resolved translation mode")
+
+	wantAvatar := (mode == "avatar" || mode == "translate_video")
+
+	if wantAvatar {
+		if !viper.GetBool("ENABLE_ANAM") {
+			respondWithError(w, http.StatusBadRequest, "Avatar mode requires ENABLE_ANAM=true")
+			return
+		}
+
+		s.Logger.Info().Str("mode", mode).Msg("Avatar mode requested, checking for existing avatar")
 
 		// Check if a persistent avatar already exists for this source user
 		existingAvatar := GetAvatarSession(req.Channel, req.SourceUID)
@@ -433,7 +456,7 @@ func (s *ServiceRouter) PalabraStart(w http.ResponseWriter, r *http.Request) {
 				streams[i].UID = fmt.Sprintf("%d", existingAvatar.AnamUID)
 			}
 		} else {
-			// NO EXISTING AVATAR: Start new avatar + bot (current behavior)
+			// NO EXISTING AVATAR: Start new avatar + bot
 			s.Logger.Info().Msg("No existing avatar, starting new avatar bot for translation")
 
 			// Get Anam configuration
@@ -547,6 +570,7 @@ func (s *ServiceRouter) PalabraStart(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// For translate_audio / translate_audio_with_original: skip avatar block entirely
 
 	// Store task info for deduplication
 	for _, targetLang := range req.TargetLanguages {
@@ -557,6 +581,7 @@ func (s *ServiceRouter) PalabraStart(w http.ResponseWriter, r *http.Request) {
 			SourceUID: req.SourceUID,
 			Channel:   req.Channel,
 			Language:  targetLang,
+			Mode:      mode,
 		}
 		s.Logger.Info().
 			Str("taskKey", taskKey).
@@ -569,6 +594,7 @@ func (s *ServiceRouter) PalabraStart(w http.ResponseWriter, r *http.Request) {
 		Success: true,
 		TaskID:  taskID,
 		Streams: streams,
+		Mode:    mode,
 	})
 }
 
