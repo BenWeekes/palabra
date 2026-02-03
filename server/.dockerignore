@@ -1,0 +1,29 @@
+# Git
+.git
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Build artifacts
+*.exe
+*.test
+*.out
+
+# Documentation
+*.md
+README*
+LICENSE
+
+# Temporary files
+tmp/
+temp/
+*.log
