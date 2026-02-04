@@ -345,7 +345,7 @@ export const TranslationProvider: React.FC<{children: React.ReactNode}> = ({
     {code: 'de', name: 'German', flag: '🇩🇪'},
     {code: 'ja', name: 'Japanese', flag: '🇯🇵'},
     {code: 'zh', name: 'Chinese', flag: '🇨🇳'},
-    {code: 'pt', name: 'Portuguese', flag: '🇵🇹'},
+    {code: 'ru', name: 'Russian', flag: '🇷🇺'},
     {code: 'it', name: 'Italian', flag: '🇮🇹'},
     {code: 'ko', name: 'Korean', flag: '🇰🇷'},
   ];
